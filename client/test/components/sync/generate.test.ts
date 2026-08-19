@@ -6,6 +6,7 @@ import { Diff } from "../../../src/components/sync/core/diff";
 import {
   CHUNK_SIZE,
   chunkBase64,
+  emitDelete,
   emitEnvironment,
   emitFileWrite,
   emitMkdirs,
@@ -118,6 +119,25 @@ describe("sync/generate", () => {
       const program = emitFileWrite("/r/it's.sas", Buffer.from("x"));
       assert.ok(program.includes("filename _out64 '/r/it''s.sas';"));
     });
+
+    // The write is where a permission problem is finally provable, so it is
+    // the one place that reports, and it names the file it could not open.
+    it("reports the path it could not open for writing", () => {
+      const program = emitFileWrite("/sasv/sasdata/x.sas", Buffer.from("x"));
+      assert.ok(
+        program.includes(
+          "put 'ERROR: sas-sync could not open for writing: ' " +
+            "'/sasv/sasdata/x.sas';",
+        ),
+      );
+      // SYSMSG carries the reason - "Insufficient authorization to access" -
+      // and FOPEN is the last file function before the PUT, so nothing has
+      // reset it.
+      assert.ok(program.includes("put 'ERROR- ' sysmsg();"));
+      // Nothing is decoded into a handle that never opened.
+      assert.ok(/if fileout = 0 then do;/.test(program));
+      assert.ok(program.indexOf("else do;") < program.indexOf("fread(filein)"));
+    });
   });
 
   describe("emitMkdirs", () => {
@@ -139,6 +159,60 @@ describe("sync/generate", () => {
 
     it("escapes a quote in the path", () => {
       assert.ok(emitMkdirs(["/r/it's"]).includes("'/r/it''s'"));
+    });
+
+    // The leaf is the only level the sync needs. Checking it first means the
+    // steady state never consults an ancestor - which matters because
+    // FILEEXIST returns 0 for an existing directory the session cannot read,
+    // so asking about /sasv or /sasv/sasdata on a shared mount would produce
+    // a DCREATE that was always going to fail.
+    it("stops at the leaf when the leaf is already there", () => {
+      assert.ok(
+        emitMkdirs(["/r/a"]).includes("if fileexist(lvl{n}) then continue;"),
+      );
+    });
+
+    it("climbs from the leaf rather than descending from the root", () => {
+      const program = emitMkdirs(["/r/a"]);
+      const climb = program.indexOf("do i = n to 1 by -1;");
+      const fill = program.indexOf("do j = i + 1 to n;");
+      assert.ok(climb > -1 && fill > climb);
+      // lvl{0} is not a subscript, so the fill must not run after a climb
+      // that created nothing.
+      assert.ok(program.includes("if i > 0 then do j = i + 1 to n;"));
+    });
+
+    // DCREATE fails the same way for a forbidden directory and an unreadable
+    // one, so reporting here would be crying wolf on a working sync.
+    it("stays quiet about a level it could not create", () => {
+      assert.ok(
+        !emitMkdirs(["/sasv/sasdata/me/repo"]).includes("could not create"),
+      );
+    });
+
+    it("refuses a path deeper than the level array", () => {
+      const program = emitMkdirs(["/r/a"]);
+      assert.ok(program.includes("if n > dim(lvl) then do;"));
+      assert.ok(program.includes("nested too deeply"));
+    });
+  });
+
+  describe("emitDelete", () => {
+    // FEXIST carries the same lie as FILEEXIST, so guarding on it would skip
+    // deletes that would have worked. FDELETE reports absence in its return
+    // code like any other refusal.
+    it("deletes without asking whether the target is there", () => {
+      const program = emitDelete("/r/gone.sas");
+      assert.ok(!program.includes("fexist"));
+      assert.ok(program.includes("if rc = 0 then rc = fdelete('_del');"));
+    });
+
+    it("clears the fileref afterwards", () => {
+      assert.ok(emitDelete("/r/gone.sas").includes("rc = filename('_del');"));
+    });
+
+    it("escapes a quote in the path", () => {
+      assert.ok(emitDelete("/r/it's.sas").includes("'/r/it''s.sas'"));
     });
   });
 

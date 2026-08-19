@@ -59,18 +59,25 @@ data _null_;
   length filein 8 fileout 8;
   filein  = fopen("_in64", 'I', 4, 'B');
   fileout = fopen("_out64", 'O', 3, 'B');
-  char = '20'x;
-  do while(fread(filein) = 0);
-    length raw $4;
-    do i = 1 to 4;
-      rc = fget(filein, char, 1);
-      substr(raw, i, 1) = char;
-    end;
-    rc = fput(fileout, input(raw, $base64X4.));
-    rc = fwrite(fileout);
+  if fileout = 0 then do;
+    put 'ERROR: sas-sync could not open for writing: ' ${sasPath(absPath)};
+    put 'ERROR- ' sysmsg();
+    if filein ne 0 then rc = fclose(filein);
   end;
-  rc = fclose(filein);
-  rc = fclose(fileout);
+  else do;
+    char = '20'x;
+    do while(fread(filein) = 0);
+      length raw $4;
+      do i = 1 to 4;
+        rc = fget(filein, char, 1);
+        substr(raw, i, 1) = char;
+      end;
+      rc = fput(fileout, input(raw, $base64X4.));
+      rc = fwrite(fileout);
+    end;
+    rc = fclose(filein);
+    rc = fclose(fileout);
+  end;
 run;
 
 filename _in64 clear;
@@ -81,9 +88,25 @@ filename _out64 clear;
 /**
  * Create directories, including intermediate levels, without XCMD.
  *
- * Walks each absolute path from the root calling DCREATE for any level that
- * does not yet exist. Paths must be absolute POSIX. Emits nothing for an
- * empty list.
+ * Works from the leaf up rather than from the root down, because the leaf is
+ * the only level the sync actually needs. The common case costs one
+ * FILEEXIST: the target is already there and no ancestor is ever consulted.
+ * The first run under an existing parent costs one more call, DCREATE on the
+ * leaf itself.
+ *
+ * DCREATE makes a single level, so a multi-level gap still needs a walk. That
+ * walk climbs until a level is created, then fills back down, which keeps it
+ * inside the missing part of the path. Levels above it are never touched, so
+ * a private ancestor is neither created nor asked about - FILEEXIST reports 0
+ * for a directory that exists but the session user cannot read, which is the
+ * usual shape of the upper levels of a shared mount, and asking would only
+ * produce a DCREATE that was always going to fail.
+ *
+ * Nothing is reported when the leaf cannot be created, because DCREATE fails
+ * identically whether the directory is forbidden or merely unreadable. That
+ * surfaces instead as a failed file write, which names the exact path.
+ *
+ * Paths must be absolute POSIX. Emits nothing for an empty list.
  */
 export const emitMkdirs = (absPaths: string[]): string => {
   if (absPaths.length === 0) {
@@ -91,28 +114,57 @@ export const emitMkdirs = (absPaths: string[]): string => {
   }
   return `
 data _null_;
-  length full $2048 part $256 parent $2048 acc $2048 dname $2048;
+  length full $2048 part $256 parent $2048 dname $2048;
+  array lvl {64} $2048 _temporary_;
   do full = ${absPaths.map(sasPath).join(", ")};
-    acc = '';
-    do i = 1 to countw(full, '/');
+    n = countw(full, '/');
+    if n > dim(lvl) then do;
+      put 'ERROR: sas-sync path is nested too deeply: ' full;
+      continue;
+    end;
+    lvl{1} = cats('/', scan(full, 1, '/'));
+    do i = 2 to n;
+      lvl{i} = cats(lvl{i-1}, '/', scan(full, i, '/'));
+    end;
+    if fileexist(lvl{n}) then continue;
+    /* Climb until a level takes, leaving i at that level, or 0 if none did. */
+    do i = n to 1 by -1;
+      if i = 1 then parent = '/';
+      else parent = lvl{i-1};
       part = scan(full, i, '/');
-      if acc = '' then parent = '/';
-      else parent = acc;
-      acc = cats(acc, '/', part);
-      if fileexist(acc) = 0 then do;
-        dname = dcreate(part, parent);
-        if dname = '' then put 'ERROR: sas-sync could not create ' acc=;
-      end;
+      dname = dcreate(part, parent);
+      if dname ne '' then leave;
+    end;
+    /* Guarded because i = 0 means nothing was created and lvl{0} is not a
+       subscript. */
+    if i > 0 then do j = i + 1 to n;
+      part = scan(full, j, '/');
+      dname = dcreate(part, lvl{j-1});
     end;
   end;
 run;
 `;
 };
 
+/**
+ * Remove one file, or one empty directory.
+ *
+ * Deletes without asking whether the target is there. FEXIST carries the same
+ * lie as FILEEXIST - 0 for something that exists but the session user cannot
+ * read - so a guard would skip deletes that would have worked, and FDELETE
+ * already reports absence the same way it reports every other refusal, in its
+ * return code.
+ *
+ * That return code is dropped rather than reported, because it cannot
+ * distinguish a file already gone from one that could not be removed, and the
+ * first is routine: anything cleaned up on the server since the last sync
+ * lands here. The cost of staying quiet is a stale remote file, which is why
+ * this is not the write path, where silence would lose data.
+ */
 export const emitDelete = (absPath: string): string => `
 data _null_;
   rc = filename('_del', ${sasPath(absPath)});
-  if rc = 0 and fexist('_del') then rc = fdelete('_del');
+  if rc = 0 then rc = fdelete('_del');
   rc = filename('_del');
 run;
 `;

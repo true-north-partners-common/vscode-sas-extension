@@ -20,6 +20,7 @@ import { collectEntries, readContents } from "./core/collect";
 import { computeDiff, diffIsEmpty } from "./core/diff";
 import { discover } from "./core/discover";
 import { emitEnvironment, emitTransfer } from "./core/generate";
+import { errorsIn } from "./core/log";
 import {
   Snapshot,
   buildSnapshot,
@@ -37,6 +38,34 @@ const DEFAULT_MAX_FILES = 2000;
  * without any extra setup; set it to "" to emit nothing.
  */
 const DEFAULT_ROOT_MACRO_VAR = "REPO";
+
+/**
+ * Submit, and refuse to call it a success if SAS disagreed.
+ *
+ * RunResult carries no status, so the log is the only place a failed write
+ * shows up. The existing handler is teed rather than replaced, because the
+ * user still wants the sync log where the rest of the log goes; it is
+ * restored on the way out so a failure here cannot leave the session mute.
+ */
+const runChecked = async (session: Session, code: string): Promise<void> => {
+  const errors: string[] = [];
+  const forward = session.onExecutionLogFn;
+
+  session.onExecutionLogFn = (logs) => {
+    errors.push(...errorsIn(logs));
+    forward?.(logs);
+  };
+
+  try {
+    await session.run(code);
+  } finally {
+    session.onExecutionLogFn = forward;
+  }
+
+  if (errors.length > 0) {
+    throw new Error(l10n.t(Messages.SyncFailed, { message: errors[0] }));
+  }
+};
 
 /**
  * The snapshot is stored per remote root, so two targets cannot clobber each
@@ -160,7 +189,7 @@ export const syncWorkspace = async (
 
     if (diffIsEmpty(diff) && diff.mkdir.length === 0) {
       if (environment) {
-        await session.run(environment);
+        await runChecked(session, environment);
       }
       return true;
     }
@@ -174,11 +203,13 @@ export const syncWorkspace = async (
       throw new CancellationError();
     }
 
-    await session.run(
+    await runChecked(
+      session,
       `${emitTransfer(diff, config.remoteRoot, contents)}\n${environment}`,
     );
 
-    // Only record what actually landed, so a failure re-sends next time.
+    // Reached only on a clean log, so the snapshot records what actually
+    // landed and a failure re-sends next time.
     await setContextValue(
       snapshotKey(config.remoteRoot),
       JSON.stringify(after),

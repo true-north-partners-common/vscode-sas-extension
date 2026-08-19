@@ -21,7 +21,10 @@ export abstract class Session {
   }
 
   protected _onExecutionLogFn: OnLogFn | undefined;
-  public set onExecutionLogFn(value: OnLogFn) {
+  public get onExecutionLogFn(): OnLogFn | undefined {
+    return this._onExecutionLogFn;
+  }
+  public set onExecutionLogFn(value: OnLogFn | undefined) {
     this._onExecutionLogFn = value;
   }
 
