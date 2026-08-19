@@ -306,6 +306,41 @@
                               "USER",
                               "SYSTEM"
                             ]
+                          },
+                          "sync": {
+                            "type": "object",
+                            "description": "%configuration.SAS.connectionProfiles.profiles.sync%",
+                            "required": [
+                              "remoteRoot"
+                            ],
+                            "properties": {
+                              "remoteRoot": {
+                                "type": "string",
+                                "description": "%configuration.SAS.connectionProfiles.profiles.sync.remoteRoot%"
+                              },
+                              "localRoot": {
+                                "type": "string",
+                                "description": "%configuration.SAS.connectionProfiles.profiles.sync.localRoot%"
+                              },
+                              "sasautos": {
+                                "type": "array",
+                                "default": [],
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "%configuration.SAS.connectionProfiles.profiles.sync.sasautos%"
+                              },
+                              "rootMacroVar": {
+                                "type": "string",
+                                "description": "%configuration.SAS.connectionProfiles.profiles.sync.rootMacroVar%",
+                                "default": "REPO"
+                              },
+                              "maxFiles": {
+                                "type": "number",
+                                "default": 2000,
+                                "description": "%configuration.SAS.connectionProfiles.profiles.sync.maxFiles%"
+                              }
+                            }
                           }
                         }
                       }

@@ -21,6 +21,7 @@ import {
   setFileName,
 } from "../components/logViewer";
 import { sasDiagnostic } from "../components/logViewer/sasDiagnostics";
+import { syncWorkspace } from "../components/sync";
 import { SASCodeDocument } from "../components/utils/SASCodeDocument";
 import { getCodeDocumentConstructionParameters } from "../components/utils/SASCodeDocumentHelper";
 import { isOutputHtmlEnabled } from "../components/utils/settings";
@@ -127,19 +128,19 @@ async function runCode(selected?: boolean, uri?: Uri) {
       title: l10n.t("SAS code running..."),
       cancellable: typeof session.cancel === "function",
     },
-    (_progress, cancellationToken) => {
+    async (_progress, cancellationToken) => {
       cancellationToken.onCancellationRequested(() => {
         session.cancel?.();
       });
-      return session
-        .run(codeDoc.getWrappedCode(), {
-          baseDirectory: codeDoc.getBaseDirectory(),
-        })
-        .then((results) => {
-          if (outputHtml && results.html5) {
-            showResult(results.html5, uri);
-          }
-        });
+      // Mirror the workspace first, so %include and autocall resolve against
+      // what is being edited. A no-op unless the profile configures sync.
+      await syncWorkspace(session, editor.document.uri, cancellationToken);
+      const results = await session.run(codeDoc.getWrappedCode(), {
+        baseDirectory: codeDoc.getBaseDirectory(),
+      });
+      if (outputHtml && results.html5) {
+        showResult(results.html5, uri);
+      }
     },
   );
 }

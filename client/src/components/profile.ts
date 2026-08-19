@@ -73,7 +73,8 @@ export enum ConnectionType {
  * value. Normally this option should not be set by the user since it is most likely
  * being set by an automated process.
  */
-export interface ViyaProfile extends BaseProfile, ProfileWithFileRootOptions {
+export interface ViyaProfile
+  extends BaseProfile, ProfileWithFileRootOptions, ProfileSyncOptions {
   connectionType: ConnectionType.Rest;
   endpoint: string;
   clientId?: string;
@@ -130,6 +131,26 @@ export interface BaseProfile {
 export interface ProfileWithFileRootOptions {
   fileNavigationCustomRootPath?: string;
   fileNavigationRoot?: "CUSTOM" | "SYSTEM" | "USER";
+}
+
+export interface ProfileSyncOptions {
+  /**
+   * Mirrors the local workspace into a persistent server path before code
+   * runs, so %include and autocall resolve against what is being edited.
+   * Absent means sync is off.
+   */
+  sync?: {
+    /** Absolute POSIX path on the SAS server. Should be per-developer. */
+    remoteRoot: string;
+    /** Workspace-relative folder to sync. Defaults to the whole folder. */
+    localRoot?: string;
+    /** Directories under remoteRoot to add to the autocall path. */
+    sasautos?: string[];
+    /** Macro variable set to remoteRoot, e.g. "REPO". */
+    rootMacroVar?: string;
+    /** Refuse to sync more than this many files. */
+    maxFiles?: number;
+  };
 }
 
 export const toAutoExecLines = (autoExec: AutoExec[]): string[] => {
