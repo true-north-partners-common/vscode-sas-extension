@@ -56,12 +56,13 @@ run;
 filename _out64 ${sasPath(absPath)};
 
 data _null_;
-  length filein 8 fileout 8;
+  length filein 8 fileout 8 msg $2048;
   filein  = fopen("_in64", 'I', 4, 'B');
   fileout = fopen("_out64", 'O', 3, 'B');
   if fileout = 0 then do;
     put 'ERROR: sas-sync could not open for writing: ' ${sasPath(absPath)};
-    put 'ERROR- ' sysmsg();
+    msg = sysmsg();
+    put 'ERROR- ' msg;
     if filein ne 0 then rc = fclose(filein);
   end;
   else do;

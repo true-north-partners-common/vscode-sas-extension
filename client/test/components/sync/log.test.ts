@@ -83,5 +83,26 @@ describe("sync/log", () => {
         ["ERROR: first", "second"],
       );
     });
+
+    it("ignores sourceDefinitions unauthorized diagnostics", () => {
+      assert.deepStrictEqual(
+        errorsIn([
+          line("normal", "ERROR: Unauthorized"),
+          line(
+            "normal",
+            "ERROR: path: /dataSources/providers/Compute/sourceDefinitions/abc",
+          ),
+          line("normal", "ERROR: correlator: c1;;c2"),
+        ]),
+        [],
+      );
+    });
+
+    it("keeps unauthorized errors unrelated to sourceDefinitions", () => {
+      assert.deepStrictEqual(
+        errorsIn([line("normal", "ERROR: Unauthorized")]),
+        ["ERROR: Unauthorized"],
+      );
+    });
   });
 });

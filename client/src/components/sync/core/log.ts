@@ -23,9 +23,47 @@ const isError = (log: LogLine): boolean => {
   return log.type === "error" || /^\s*ERROR[:\- ]/.test(log.line ?? "");
 };
 
+const isSourceDefinitionPath = (line: string): boolean =>
+  /^\s*ERROR:\s*path:\s*\/dataSources\/providers\/Compute\/sourceDefinitions\//.test(
+    line,
+  );
+
+const isCorrelator = (line: string): boolean =>
+  /^\s*ERROR:\s*correlator:/.test(line);
+
+const isUnauthorized = (line: string): boolean =>
+  /^\s*ERROR:\s*Unauthorized\s*$/.test(line);
+
+const isIgnoredSourceDefinitionUnauthorized = (
+  logs: LogLine[],
+  i: number,
+): boolean => {
+  const line = logs[i].line ?? "";
+  const next = logs[i + 1]?.line ?? "";
+  const next2 = logs[i + 2]?.line ?? "";
+
+  // Known noisy REST diagnostics, not a SAS transfer failure:
+  // ERROR: Unauthorized
+  // ERROR: path: /dataSources/providers/Compute/sourceDefinitions/...
+  // ERROR: correlator: ...
+  if (
+    isUnauthorized(line) &&
+    isSourceDefinitionPath(next) &&
+    isCorrelator(next2)
+  ) {
+    return true;
+  }
+
+  return isSourceDefinitionPath(line) || isCorrelator(line);
+};
+
 /**
  * The error lines of a submission, in the order SAS produced them, trimmed
  * for display. Empty when the submission was clean.
  */
 export const errorsIn = (logs: LogLine[]): string[] =>
-  logs.filter(isError).map((log) => log.line.trim());
+  logs
+    .filter((log, i, all) =>
+      isError(log) && !isIgnoredSourceDefinitionUnauthorized(all, i),
+    )
+    .map((log) => log.line.trim());

@@ -133,7 +133,8 @@ describe("sync/generate", () => {
       // SYSMSG carries the reason - "Insufficient authorization to access" -
       // and FOPEN is the last file function before the PUT, so nothing has
       // reset it.
-      assert.ok(program.includes("put 'ERROR- ' sysmsg();"));
+      assert.ok(program.includes("msg = sysmsg();"));
+      assert.ok(program.includes("put 'ERROR- ' msg;"));
       // Nothing is decoded into a handle that never opened.
       assert.ok(/if fileout = 0 then do;/.test(program));
       assert.ok(program.indexOf("else do;") < program.indexOf("fread(filein)"));
