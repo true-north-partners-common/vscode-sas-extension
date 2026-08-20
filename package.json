@@ -335,6 +335,17 @@
                                 "description": "%configuration.SAS.connectionProfiles.profiles.sync.rootMacroVar%",
                                 "default": "REPO"
                               },
+                              "fileExtensions": {
+                                "type": "array",
+                                "default": [
+                                  ".sas",
+                                  ".inc"
+                                ],
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "%configuration.SAS.connectionProfiles.profiles.sync.fileExtensions%"
+                              },
                               "maxFiles": {
                                 "type": "number",
                                 "default": 2000,

@@ -9,7 +9,7 @@ import {
   workspace,
 } from "vscode";
 
-import { basename, join } from "path";
+import { basename, extname, join } from "path";
 
 import { profileConfig } from "../../commands/profile";
 import { Session } from "../../connection/session";
@@ -35,6 +35,7 @@ import {
 type SyncConfig = NonNullable<ProfileSyncOptions["sync"]>;
 
 const DEFAULT_MAX_FILES = 2000;
+const DEFAULT_SYNC_FILE_EXTENSIONS = [".sas", ".inc"];
 
 /**
  * The macro variable always points at remoteRoot, so the only thing worth
@@ -103,6 +104,40 @@ const resolveWorkspaceFolder = (uri?: Uri): Uri | undefined => {
   }
   const owning = uri ? workspace.getWorkspaceFolder(uri) : undefined;
   return (owning ?? folders[0]).uri;
+};
+
+const normalizeExtensions = (configured?: string[]): Set<string> => {
+  const source =
+    configured && configured.length > 0
+      ? configured
+      : DEFAULT_SYNC_FILE_EXTENSIONS;
+
+  const normalized = new Set<string>();
+  for (const extension of source) {
+    const token = extension.trim().toLowerCase();
+    if (!token) {
+      continue;
+    }
+    normalized.add(token.startsWith(".") ? token : `.${token}`);
+  }
+
+  if (normalized.size === 0) {
+    for (const extension of DEFAULT_SYNC_FILE_EXTENSIONS) {
+      normalized.add(extension);
+    }
+  }
+
+  return normalized;
+};
+
+const filterSyncPaths = (
+  relPaths: string[],
+  configuredExtensions?: string[],
+): string[] => {
+  const allowed = normalizeExtensions(configuredExtensions);
+  return relPaths.filter((relPath) =>
+    allowed.has(extname(relPath).toLowerCase()),
+  );
 };
 
 const readSnapshot = async (remoteRoot: string): Promise<Snapshot> => {
@@ -183,7 +218,10 @@ export const syncWorkspace = async (
   const cancelSub = token?.onCancellationRequested(() => controller.abort());
 
   try {
-    const relPaths = await discover(syncRoot, { signal: controller.signal });
+    const relPaths = filterSyncPaths(
+      await discover(syncRoot, { signal: controller.signal }),
+      config.fileExtensions,
+    );
 
     const maxFiles = config.maxFiles ?? DEFAULT_MAX_FILES;
     if (relPaths.length > maxFiles) {

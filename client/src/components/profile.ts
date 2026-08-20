@@ -151,6 +151,12 @@ export interface ProfileSyncOptions {
     sasautos?: string[];
     /** Macro variable set to remoteRoot, e.g. "REPO". */
     rootMacroVar?: string;
+    /**
+     * File extensions to sync, e.g. [".sas", ".inc"].
+     * Values are case-insensitive and may be written with or without a
+     * leading dot.
+     */
+    fileExtensions?: string[];
     /** Refuse to sync more than this many files. */
     maxFiles?: number;
   };
