@@ -9,9 +9,15 @@ import {
   workspace,
 } from "vscode";
 
-import { basename, extname, join } from "path";
+import { createHash } from "crypto";
+import { readFile } from "fs/promises";
+import { basename, extname, join, posix } from "path";
+
+import { AxiosError } from "axios";
 
 import { profileConfig } from "../../commands/profile";
+import { FileSystemApi } from "../../connection/rest/api/compute";
+import { getApiConfig } from "../../connection/rest/common";
 import { Session } from "../../connection/session";
 import { getContextValue, setContextValue } from "../ExtensionContext";
 import { ConnectionType, ProfileSyncOptions } from "../profile";
@@ -23,7 +29,7 @@ import {
   RemoteRootExpansionError,
   resolveRemoteRoot,
 } from "./core/expand";
-import { emitEnvironment, emitTransfer } from "./core/generate";
+import { emitEnvironment } from "./core/generate";
 import { errorsIn } from "./core/log";
 import {
   Snapshot,
@@ -36,6 +42,7 @@ type SyncConfig = NonNullable<ProfileSyncOptions["sync"]>;
 
 const DEFAULT_MAX_FILES = 2000;
 const DEFAULT_SYNC_FILE_EXTENSIONS = [".sas", ".inc"];
+const MANIFEST_FILE_NAME = ".sas-sync-manifest.sha256";
 
 /**
  * The macro variable always points at remoteRoot, so the only thing worth
@@ -43,14 +50,14 @@ const DEFAULT_SYNC_FILE_EXTENSIONS = [".sas", ".inc"];
  * without any extra setup; set it to "" to emit nothing.
  */
 const DEFAULT_ROOT_MACRO_VAR = "REPO";
+const FORCE_RESYNC_CONTEXT_KEY = "SAS.sync.forceResync";
+const SAS_FILE_SEPARATOR = "~fs~";
 
 /**
  * Submit, and refuse to call it a success if SAS disagreed.
  *
- * RunResult carries no status, so the log is the only place a failed write
- * shows up. The existing handler is teed rather than replaced, because the
- * user still wants the sync log where the rest of the log goes; it is
- * restored on the way out so a failure here cannot leave the session mute.
+ * RunResult carries no status, so the log is still the source of truth for
+ * environment setup failures.
  */
 const runChecked = async (session: Session, code: string): Promise<void> => {
   const errors: string[] = [];
@@ -72,12 +79,31 @@ const runChecked = async (session: Session, code: string): Promise<void> => {
   }
 };
 
+// Keyed by session identity so a reconnect (a new Session) re-applies, while
+// repeated runs against the same session skip a submission that would be a
+// no-op.
+const lastEnvironmentBySession = new WeakMap<Session, string>();
+
+const ensureEnvironment = async (
+  session: Session,
+  environment: string,
+): Promise<void> => {
+  if (!environment || lastEnvironmentBySession.get(session) === environment) {
+    return;
+  }
+  await runChecked(session, environment);
+  lastEnvironmentBySession.set(session, environment);
+};
+
 /**
  * The snapshot is stored per remote root, so two targets cannot clobber each
  * other's state.
  */
 const snapshotKey = (remoteRoot: string): string =>
   `SAS.sync.snapshot:${remoteRoot}`;
+
+const manifestPath = (remoteRoot: string): string =>
+  posix.join(remoteRoot, MANIFEST_FILE_NAME);
 
 /**
  * Sync configuration lives on the active Viya profile. An absent block means
@@ -153,6 +179,282 @@ const readSnapshot = async (remoteRoot: string): Promise<Snapshot> => {
   }
 };
 
+const shouldForceResync = async (): Promise<boolean> =>
+  Boolean(await getContextValue(FORCE_RESYNC_CONTEXT_KEY));
+
+const clearForceResync = async (): Promise<void> => {
+  await setContextValue(FORCE_RESYNC_CONTEXT_KEY, "");
+};
+
+const computeManifestHash = async (
+  syncRoot: string,
+  relPaths: string[],
+): Promise<string> => {
+  const manifestHash = createHash("sha256");
+  const sorted = [...relPaths].sort();
+
+  for (const relPath of sorted) {
+    const fileHash = createHash("sha256");
+    fileHash.update(await readFile(join(syncRoot, relPath), "utf8"));
+
+    manifestHash.update(toPosix(relPath));
+    manifestHash.update("\0");
+    manifestHash.update(fileHash.digest("hex"));
+    manifestHash.update("\n");
+  }
+
+  return manifestHash.digest("hex");
+};
+
+const toComputePath = (absolutePosixPath: string): string =>
+  absolutePosixPath.split("/").join(SAS_FILE_SEPARATOR);
+
+const remotePathFromRel = (remoteRoot: string, relPath: string): string =>
+  posix.join(remoteRoot, toPosix(relPath));
+
+const axiosStatus = (error: unknown): number | undefined => {
+  if (error instanceof AxiosError) {
+    return error.response?.status;
+  }
+  return undefined;
+};
+
+const createFileSystemApi = () => FileSystemApi(getApiConfig());
+
+const TRANSFER_CONCURRENCY = 8;
+
+/**
+ * Run a worker over every item with at most `concurrency` requests in
+ * flight, so independent uploads/deletes don't wait on each other's HTTP
+ * round trip the way a plain sequential loop would.
+ */
+const runConcurrently = async <T>(
+  items: T[],
+  worker: (item: T) => Promise<void>,
+  concurrency = TRANSFER_CONCURRENCY,
+): Promise<void> => {
+  let next = 0;
+  const lanes = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (next < items.length) {
+        await worker(items[next++]);
+      }
+    },
+  );
+  await Promise.all(lanes);
+};
+
+const pathExists = async (
+  sessionId: string,
+  absolutePosixPath: string,
+): Promise<boolean> => {
+  const api = createFileSystemApi();
+  try {
+    await api.headersForFileorDirectoryProperties({
+      sessionId,
+      fileOrDirectoryPath: toComputePath(absolutePosixPath),
+    });
+    return true;
+  } catch (error) {
+    if (axiosStatus(error) === 404) {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const getEtag = async (
+  sessionId: string,
+  absolutePosixPath: string,
+): Promise<string | undefined> => {
+  const api = createFileSystemApi();
+  try {
+    const response = await api.headersForFileorDirectoryProperties({
+      sessionId,
+      fileOrDirectoryPath: toComputePath(absolutePosixPath),
+    });
+    const etag = response.headers.etag;
+    return typeof etag === "string" ? etag : undefined;
+  } catch (error) {
+    if (axiosStatus(error) === 404) {
+      return undefined;
+    }
+    throw error;
+  }
+};
+
+const ensureDirectory = async (
+  sessionId: string,
+  absolutePosixPath: string,
+): Promise<void> => {
+  if (absolutePosixPath === "/") {
+    return;
+  }
+
+  if (await pathExists(sessionId, absolutePosixPath)) {
+    return;
+  }
+
+  const parent = posix.dirname(absolutePosixPath);
+  await ensureDirectory(sessionId, parent);
+
+  const api = createFileSystemApi();
+  try {
+    await api.createFileOrDirectory({
+      sessionId,
+      fileOrDirectoryPath: toComputePath(parent),
+      fileProperties: {
+        name: posix.basename(absolutePosixPath),
+        isDirectory: true,
+      },
+    });
+  } catch (error) {
+    if (axiosStatus(error) === 409) {
+      return;
+    }
+    if (!(await pathExists(sessionId, absolutePosixPath))) {
+      throw error;
+    }
+  }
+};
+
+const remoteManifestHash = async (
+  sessionId: string,
+  remoteRoot: string,
+): Promise<string | undefined> => {
+  const api = createFileSystemApi();
+  try {
+    const response = await api.getFileContentFromSystem(
+      {
+        sessionId,
+        filePath: toComputePath(manifestPath(remoteRoot)),
+      },
+      {
+        responseType: "arraybuffer",
+      },
+    );
+
+    // The endpoint returns binary data; decode and use the first line.
+    const raw = Buffer.from(response.data as unknown as ArrayBufferLike)
+      .toString("utf8")
+      .trim();
+    if (!raw) {
+      return undefined;
+    }
+    return raw.split(/\r?\n/, 1)[0].trim() || undefined;
+  } catch (error) {
+    if (axiosStatus(error) === 404) {
+      return undefined;
+    }
+    throw error;
+  }
+};
+
+const remoteNeedsResync = async (
+  sessionId: string,
+  remoteRoot: string,
+  probeRelPath?: string,
+): Promise<boolean> => {
+  const probePath = probeRelPath
+    ? remotePathFromRel(remoteRoot, probeRelPath)
+    : remoteRoot;
+  return !(await pathExists(sessionId, probePath));
+};
+
+const applyDiffWithApi = async (
+  sessionId: string,
+  remoteRoot: string,
+  diff: ReturnType<typeof computeDiff>,
+  contents: Map<string, Buffer>,
+): Promise<void> => {
+  const api = createFileSystemApi();
+
+  await ensureDirectory(sessionId, remoteRoot);
+
+  // Leaf directories are independent of one another (collapseToLeaves
+  // already dropped ancestors), and ensureDirectory tolerates a 409 from a
+  // shared parent created by a concurrent lane, so this is safe to run in
+  // parallel.
+  await runConcurrently(diff.mkdir, (relativeDirPath) =>
+    ensureDirectory(sessionId, remotePathFromRel(remoteRoot, relativeDirPath)),
+  );
+
+  await runConcurrently(diff.put, async (relPath) => {
+    const absPath = remotePathFromRel(remoteRoot, relPath);
+    await ensureDirectory(sessionId, posix.dirname(absPath));
+
+    const content = contents.get(toPosix(relPath));
+    if (!content) {
+      return;
+    }
+
+    await api.updateFileContentOnSystem({
+      sessionId,
+      filePath: toComputePath(absPath),
+      // Generated types require File, but API accepts octet-stream bytes.
+      body: content as unknown as File,
+      ifMatch: await getEtag(sessionId, absPath),
+    });
+  });
+
+  await runConcurrently(diff.delete, async (relPath) => {
+    const absPath = remotePathFromRel(remoteRoot, relPath);
+    const etag = await getEtag(sessionId, absPath);
+    if (!etag && !(await pathExists(sessionId, absPath))) {
+      return;
+    }
+
+    try {
+      await api.deleteFileOrDirectoryFromSystem({
+        sessionId,
+        fileOrDirectoryPath: toComputePath(absPath),
+        ifMatch: etag || "",
+      });
+    } catch {
+      // Keep deletes best-effort to preserve current sync behavior.
+    }
+  });
+
+  // rmdir stays sequential: diff orders it deepest-first so a child is gone
+  // before its parent's removal is attempted, which parallel lanes would not
+  // preserve.
+  for (const relativeDirPath of diff.rmdir) {
+    const absPath = remotePathFromRel(remoteRoot, relativeDirPath);
+    const etag = await getEtag(sessionId, absPath);
+    if (!etag && !(await pathExists(sessionId, absPath))) {
+      continue;
+    }
+
+    try {
+      await api.deleteFileOrDirectoryFromSystem({
+        sessionId,
+        fileOrDirectoryPath: toComputePath(absPath),
+        ifMatch: etag || "",
+      });
+    } catch {
+      // Extra server files can keep directories non-empty; ignore and proceed.
+    }
+  }
+};
+
+const writeRemoteManifest = async (
+  sessionId: string,
+  remoteRoot: string,
+  hash: string,
+): Promise<void> => {
+  const api = createFileSystemApi();
+  const path = manifestPath(remoteRoot);
+
+  await ensureDirectory(sessionId, posix.dirname(path));
+  await api.updateFileContentOnSystem({
+    sessionId,
+    filePath: toComputePath(path),
+    body: Buffer.from(`${hash}\n`, "utf8") as unknown as File,
+    ifMatch: await getEtag(sessionId, path),
+  });
+};
+
 /**
  * Mirror the workspace into the profile's remote root, then wire up the root
  * macro variable and autocall path.
@@ -164,6 +466,7 @@ export const syncWorkspace = async (
   session: Session,
   uri: Uri | undefined,
   token?: CancellationToken,
+  options: { force?: boolean } = {},
 ): Promise<boolean> => {
   const config = activeSyncConfig();
   if (!config) {
@@ -218,6 +521,12 @@ export const syncWorkspace = async (
   const cancelSub = token?.onCancellationRequested(() => controller.abort());
 
   try {
+    const sessionId = session.sessionId?.();
+    if (!sessionId) {
+      throw new Error(Messages.RequiresViya);
+    }
+
+    const force = options.force || (await shouldForceResync());
     const relPaths = filterSyncPaths(
       await discover(syncRoot, { signal: controller.signal }),
       config.fileExtensions,
@@ -236,10 +545,26 @@ export const syncWorkspace = async (
     const entries = await collectEntries(syncRoot, relPaths);
     const after = buildSnapshot(remoteRoot, entries);
     const before = await readSnapshot(remoteRoot);
-    const diff = computeDiff(after.lastModified, before.lastModified);
+    let diff = force
+      ? computeDiff(after.lastModified, {})
+      : computeDiff(after.lastModified, before.lastModified);
+    let forceTransfer = force;
+    // A pure function of (relPaths, mtimes): the diff proves those are
+    // unchanged from the last successful sync, so its cached hash can be
+    // reused instead of re-reading and re-hashing every file.
+    let localManifest: string | undefined =
+      diffIsEmpty(diff) && diff.mkdir.length === 0
+        ? before.manifestHash
+        : undefined;
+    const getLocalManifest = async (): Promise<string> => {
+      if (!localManifest) {
+        localManifest = await computeManifestHash(syncRoot, relPaths);
+      }
+      return localManifest;
+    };
 
-    // The environment is emitted on every run: the macro variable and
-    // autocall path must exist even when no file changed.
+    // Computed on every run since remoteRoot can vary by workspace folder,
+    // but only resubmitted when it actually changes for this session.
     const environment = emitEnvironment({
       remoteRoot,
       sasautos: config.sasautos,
@@ -247,8 +572,31 @@ export const syncWorkspace = async (
     });
 
     if (diffIsEmpty(diff) && diff.mkdir.length === 0) {
-      if (environment) {
-        await runChecked(session, environment);
+      const probeRelPath = entries[0]?.relPath;
+      if (await remoteNeedsResync(sessionId, remoteRoot, probeRelPath)) {
+        forceTransfer = true;
+        diff = computeDiff(after.lastModified, {});
+      } else {
+        const [localHash, remoteHash] = await Promise.all([
+          getLocalManifest(),
+          remoteManifestHash(sessionId, remoteRoot),
+        ]);
+        if (localHash !== remoteHash) {
+          forceTransfer = true;
+          diff = computeDiff(after.lastModified, {});
+        }
+      }
+    }
+
+    if (!forceTransfer && diffIsEmpty(diff) && diff.mkdir.length === 0) {
+      await ensureEnvironment(session, environment);
+      // Only a freshly computed hash (not the one already in before) needs
+      // writing back - otherwise this is a no-op every steady-state run.
+      if (localManifest && localManifest !== before.manifestHash) {
+        await setContextValue(
+          snapshotKey(remoteRoot),
+          JSON.stringify({ ...after, manifestHash: localManifest }),
+        );
       }
       return true;
     }
@@ -262,19 +610,24 @@ export const syncWorkspace = async (
       throw new CancellationError();
     }
 
-    await runChecked(
-      session,
-      `${emitTransfer(diff, remoteRoot, contents)}\n${environment}`,
-    );
+    await applyDiffWithApi(sessionId, remoteRoot, diff, contents);
+    await writeRemoteManifest(sessionId, remoteRoot, await getLocalManifest());
 
-    // Reached only on a clean log, so the snapshot records what actually
-    // landed and a failure re-sends next time.
+    await ensureEnvironment(session, environment);
+
+    // Reached only on clean transfer and environment setup, so the snapshot
+    // records what actually landed and a failure re-sends next time.
     await setContextValue(
       snapshotKey(remoteRoot),
-      JSON.stringify(after),
+      JSON.stringify({ ...after, manifestHash: await getLocalManifest() }),
     );
+    await clearForceResync();
     return true;
   } finally {
     cancelSub?.dispose();
   }
+};
+
+export const forceWorkspaceResyncNextRun = async (): Promise<void> => {
+  await setContextValue(FORCE_RESYNC_CONTEXT_KEY, "true");
 };

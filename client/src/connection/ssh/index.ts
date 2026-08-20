@@ -17,6 +17,7 @@ import {
 
 import { BaseConfig, RunResult } from "..";
 import { updateStatusBarItem } from "../../components/StatusBarItem";
+import { expandVariables } from "../../components/utils/expandVariables";
 import { Session } from "../session";
 import { extractOutputHtmlFileName } from "../util";
 import { AuthHandler } from "./auth";
@@ -325,7 +326,7 @@ export class SSHSession extends Session {
               //user set a keyfile path in profile config
               if (this._config.privateKeyFilePath) {
                 authPayload = await this._authHandler.privateKeyAuth(
-                  this._config.privateKeyFilePath,
+                  expandVariables(this._config.privateKeyFilePath),
                   this._config.username,
                 );
               } else if (process.env.SSH_AUTH_SOCK) {

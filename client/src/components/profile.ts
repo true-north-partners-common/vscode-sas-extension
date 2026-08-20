@@ -11,6 +11,8 @@ import {
 
 import { readFileSync } from "fs";
 
+import { expandVariables } from "./utils/expandVariables";
+
 export const EXTENSION_CONFIG_KEY = "SAS";
 export const EXTENSION_DEFINE_PROFILES_CONFIG_KEY = "connectionProfiles";
 export const EXTENSION_PROFILES_CONFIG_KEY = "profiles";
@@ -192,13 +194,14 @@ export const toAutoExecLines = (autoExec: AutoExec[]): string[] => {
  */
 const toAutoExecLinesFromPaths = (filePath: string): string[] => {
   const lines: string[] = [];
+  const resolvedPath = expandVariables(filePath);
   try {
-    const content = readFileSync(filePath, "utf8").split(/\n|\r\n/);
+    const content = readFileSync(resolvedPath, "utf8").split(/\n|\r\n/);
     lines.push(...content);
   } catch (e) {
     const err: Error = e;
     console.warn(
-      `Error reading file: ${filePath}, error: ${err.message}, skipping...`,
+      `Error reading file: ${resolvedPath}, error: ${err.message}, skipping...`,
     );
   }
   return lines;

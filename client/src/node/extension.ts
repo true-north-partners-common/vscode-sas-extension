@@ -32,6 +32,7 @@ import {
   updateProfile,
 } from "../commands/profile";
 import { run, runRegion, runSelected } from "../commands/run";
+import { resyncWorkspace } from "../commands/sync";
 import { toggleLineComment } from "../commands/toggleLineComment";
 import { getRestAPIs } from "../components/APIProvider";
 import { SASAuthProvider } from "../components/AuthProvider";
@@ -155,6 +156,11 @@ export function activate(context: ExtensionContext) {
     }),
     commands.registerCommand("SAS.runRegion", async () => {
       await runRegion(client);
+      await libraryNavigator.refresh();
+      libraryNavigator.refreshOpenTableViewers();
+    }),
+    commands.registerCommand("SAS.resyncWorkspace", async () => {
+      await resyncWorkspace();
       await libraryNavigator.refresh();
       libraryNavigator.refreshOpenTableViewers();
     }),

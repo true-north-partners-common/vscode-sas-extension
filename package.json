@@ -18,7 +18,8 @@
   "activationEvents": [
     "onWebviewPanel:SASResultPanel",
     "onLanguage:sas",
-    "onNotebook:sas-notebook"
+    "onNotebook:sas-notebook",
+    "onCommand:SAS.resyncWorkspace"
   ],
   "main": "./client/dist/node/extension",
   "browser": "./client/dist/browser/extension",
@@ -669,6 +670,13 @@
         "category": "SAS"
       },
       {
+        "command": "SAS.resyncWorkspace",
+        "title": "%commands.SAS.resyncWorkspace%",
+        "icon": "$(sync)",
+        "enablement": "!SAS.running",
+        "category": "SAS"
+      },
+      {
         "command": "SAS.close",
         "title": "%commands.SAS.close%",
         "icon": {
@@ -1163,6 +1171,13 @@
           "command": "SAS.runSelected"
         }
       ],
+      "editor/title": [
+        {
+          "when": "(editorLangId == sas || (editorLangId =~ /^(python|r|sql)$/ && resourceScheme =~ /^sas(Content|Server).*/)) && !SAS.hideRunMenuItem",
+          "command": "SAS.resyncWorkspace",
+          "group": "navigation@20"
+        }
+      ],
       "editor/context": [
         {
           "when": "(editorLangId == sas || (editorLangId =~ /^(python|r|sql)$/ && resourceScheme =~ /^sas(Content|Server).*/)) && !SAS.hideRunMenuItem",
@@ -1178,6 +1193,11 @@
           "when": "(editorLangId == sas || (editorLangId =~ /^(python|r|sql)$/ && resourceScheme =~ /^sas(Content|Server).*/)) && !SAS.hideRunMenuItem",
           "command": "SAS.runRegion",
           "group": "navigation@3"
+        },
+        {
+          "when": "(editorLangId == sas || (editorLangId =~ /^(python|r|sql)$/ && resourceScheme =~ /^sas(Content|Server).*/)) && !SAS.hideRunMenuItem",
+          "command": "SAS.resyncWorkspace",
+          "group": "navigation@4"
         }
       ],
       "notebook/toolbar": [
@@ -1204,6 +1224,10 @@
         {
           "when": "(editorLangId == sas || (editorLangId =~ /^(python|r|sql)$/ && resourceScheme =~ /^sas(Content|Server).*/)) && !SAS.hideRunMenuItem",
           "command": "SAS.runRegion"
+        },
+        {
+          "when": "(editorLangId == sas || (editorLangId =~ /^(python|r|sql)$/ && resourceScheme =~ /^sas(Content|Server).*/)) && !SAS.hideRunMenuItem",
+          "command": "SAS.resyncWorkspace"
         },
         {
           "command": "SAS.authorize",

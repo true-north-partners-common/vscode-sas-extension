@@ -15,6 +15,13 @@ export interface Snapshot {
   remoteRoot: string;
   /** Workspace-relative POSIX path -> mtime in milliseconds. */
   lastModified: FileTimes;
+  /**
+   * Hash of the tree this snapshot describes, if one was computed. A pure
+   * function of lastModified, so it can be reused as long as lastModified
+   * is unchanged - skipping a full re-read and re-hash of every file on a
+   * run that touched nothing.
+   */
+  manifestHash?: string;
 }
 
 /** The payload a diff actually operates on. */

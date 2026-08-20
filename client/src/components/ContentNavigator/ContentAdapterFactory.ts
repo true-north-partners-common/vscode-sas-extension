@@ -4,6 +4,7 @@ import ItcServerAdapter from "../../connection/itc/ItcServerAdapter";
 import RestContentAdapter from "../../connection/rest/RestContentAdapter";
 import RestServerAdapter from "../../connection/rest/RestServerAdapter";
 import { ConnectionType, ProfileWithFileRootOptions } from "../profile";
+import { expandVariables } from "../utils/expandVariables";
 import {
   ContentAdapter,
   ContentNavigatorConfig,
@@ -17,19 +18,16 @@ class ContentAdapterFactory {
     fileNavigationRoot: ProfileWithFileRootOptions["fileNavigationRoot"],
     sourceType: ContentNavigatorConfig["sourceType"],
   ): ContentAdapter {
+    const resolvedRootPath = fileNavigationCustomRootPath
+      ? expandVariables(fileNavigationCustomRootPath)
+      : fileNavigationCustomRootPath;
     const key = `${connectionType}.${sourceType}`;
     switch (key) {
       case `${ConnectionType.Rest}.${ContentSourceType.SASServer}`:
-        return new RestServerAdapter(
-          fileNavigationCustomRootPath,
-          fileNavigationRoot,
-        );
+        return new RestServerAdapter(resolvedRootPath, fileNavigationRoot);
       case `${ConnectionType.IOM}.${ContentSourceType.SASServer}`:
       case `${ConnectionType.COM}.${ContentSourceType.SASServer}`:
-        return new ItcServerAdapter(
-          fileNavigationCustomRootPath,
-          fileNavigationRoot,
-        );
+        return new ItcServerAdapter(resolvedRootPath, fileNavigationRoot);
       case `${ConnectionType.Rest}.${ContentSourceType.SASContent}`:
       default:
         return new RestContentAdapter();
@@ -38,3 +36,4 @@ class ContentAdapterFactory {
 }
 
 export default ContentAdapterFactory;
+
