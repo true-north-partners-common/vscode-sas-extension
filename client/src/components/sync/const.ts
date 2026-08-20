@@ -12,6 +12,9 @@ export const Messages = {
   RemoteRootNotAbsolute: l10n.t(
     'The sync remoteRoot "{remoteRoot}" must be an absolute path starting with "/".',
   ),
+  RemoteRootExpandFailed: l10n.t(
+    'Unable to expand sync remoteRoot "{remoteRoot}". {message}',
+  ),
   RequiresLocalFolder: l10n.t(
     "Workspace sync requires a folder stored on this machine.",
   ),

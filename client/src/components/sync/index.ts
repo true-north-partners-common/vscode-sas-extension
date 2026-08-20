@@ -9,7 +9,7 @@ import {
   workspace,
 } from "vscode";
 
-import { join } from "path";
+import { basename, join } from "path";
 
 import { profileConfig } from "../../commands/profile";
 import { Session } from "../../connection/session";
@@ -19,6 +19,10 @@ import { Messages } from "./const";
 import { collectEntries, readContents } from "./core/collect";
 import { computeDiff, diffIsEmpty } from "./core/diff";
 import { discover } from "./core/discover";
+import {
+  RemoteRootExpansionError,
+  resolveRemoteRoot,
+} from "./core/expand";
 import { emitEnvironment, emitTransfer } from "./core/generate";
 import { errorsIn } from "./core/log";
 import {
@@ -131,14 +135,6 @@ export const syncWorkspace = async (
     return false;
   }
 
-  if (!config.remoteRoot?.startsWith("/")) {
-    throw new Error(
-      l10n.t(Messages.RemoteRootNotAbsolute, {
-        remoteRoot: config.remoteRoot ?? "",
-      }),
-    );
-  }
-
   // Shelling out to git and uploading workspace contents is exactly what
   // workspace trust exists to gate.
   if (!workspace.isTrusted) {
@@ -152,6 +148,31 @@ export const syncWorkspace = async (
   }
   if (folder.scheme !== "file") {
     throw new Error(Messages.RequiresLocalFolder);
+  }
+
+  let remoteRoot: string;
+  try {
+    remoteRoot = resolveRemoteRoot(config.remoteRoot, {
+      workspaceFolderBasename: basename(folder.fsPath),
+    });
+  } catch (error) {
+    if (error instanceof RemoteRootExpansionError) {
+      throw new Error(
+        l10n.t(Messages.RemoteRootExpandFailed, {
+          remoteRoot: config.remoteRoot,
+          message: `${error.variable}: ${error.message}`,
+        }),
+      );
+    }
+    throw error;
+  }
+
+  if (!remoteRoot.startsWith("/")) {
+    throw new Error(
+      l10n.t(Messages.RemoteRootNotAbsolute, {
+        remoteRoot,
+      }),
+    );
   }
 
   const syncRoot = config.localRoot
@@ -175,14 +196,14 @@ export const syncWorkspace = async (
     }
 
     const entries = await collectEntries(syncRoot, relPaths);
-    const after = buildSnapshot(config.remoteRoot, entries);
-    const before = await readSnapshot(config.remoteRoot);
+    const after = buildSnapshot(remoteRoot, entries);
+    const before = await readSnapshot(remoteRoot);
     const diff = computeDiff(after.lastModified, before.lastModified);
 
     // The environment is emitted on every run: the macro variable and
     // autocall path must exist even when no file changed.
     const environment = emitEnvironment({
-      remoteRoot: config.remoteRoot,
+      remoteRoot,
       sasautos: config.sasautos,
       rootMacroVar: config.rootMacroVar ?? DEFAULT_ROOT_MACRO_VAR,
     });
@@ -205,13 +226,13 @@ export const syncWorkspace = async (
 
     await runChecked(
       session,
-      `${emitTransfer(diff, config.remoteRoot, contents)}\n${environment}`,
+      `${emitTransfer(diff, remoteRoot, contents)}\n${environment}`,
     );
 
     // Reached only on a clean log, so the snapshot records what actually
     // landed and a failure re-sends next time.
     await setContextValue(
-      snapshotKey(config.remoteRoot),
+      snapshotKey(remoteRoot),
       JSON.stringify(after),
     );
     return true;

@@ -63,7 +63,7 @@
   "configuration.SAS.connectionProfiles.profiles.sync": "Mirror the local workspace into a persistent path on the SAS server before code runs, so %include and autocall resolve against the files you are editing. Omit to disable.",
   "configuration.SAS.connectionProfiles.profiles.sync.localRoot": "Workspace-relative folder to sync. Defaults to the whole workspace folder.",
   "configuration.SAS.connectionProfiles.profiles.sync.maxFiles": "Refuse to sync more files than this.",
-  "configuration.SAS.connectionProfiles.profiles.sync.remoteRoot": "Absolute path on the SAS server to mirror into. Use a per-developer folder on persistent storage.",
+  "configuration.SAS.connectionProfiles.profiles.sync.remoteRoot": "Absolute path on the SAS server to mirror into. Supports ${env:NAME}, ${env.NAME}, and ${workspaceFolderBasename}. Use a per-developer folder on persistent storage.",
   "configuration.SAS.connectionProfiles.profiles.sync.rootMacroVar": "Name of the macro variable set to remoteRoot, letting code refer to it as %include \"&REPO/...\". Set to an empty string to skip it.",
   "configuration.SAS.connectionProfiles.profiles.sync.sasautos": "Folders under remoteRoot to add to the autocall macro search path.",
   "configuration.SAS.flowConversionMode": "Choose the conversion mode for notebooks",

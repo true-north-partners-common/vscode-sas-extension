@@ -140,7 +140,10 @@ export interface ProfileSyncOptions {
    * Absent means sync is off.
    */
   sync?: {
-    /** Absolute POSIX path on the SAS server. Should be per-developer. */
+    /**
+     * Absolute POSIX path on the SAS server. Supports ${env:NAME},
+     * ${env.NAME}, and ${workspaceFolderBasename} expansion.
+     */
     remoteRoot: string;
     /** Workspace-relative folder to sync. Defaults to the whole folder. */
     localRoot?: string;
