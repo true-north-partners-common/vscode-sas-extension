@@ -33,16 +33,35 @@ export const collectEntries = async (
   return entries.filter((entry): entry is FileEntry => entry !== undefined);
 };
 
-/** Read the files a diff is about to send. */
+const isErrnoException = (error: unknown): error is NodeJS.ErrnoException =>
+  error instanceof Error && "code" in error;
+
+/**
+ * Read the files a diff is about to send.
+ *
+ * A path can vanish between the stat that put it in the diff and this read
+ * (deleted, or a rename mid-sync) - dropped from the map rather than
+ * thrown, since applyDiffWithApi already skips a put with no content, and
+ * the next run's stat will pick it up as a delete instead.
+ */
 export const readContents = async (
   rootAbs: string,
   relPaths: string[],
 ): Promise<Map<string, Buffer>> => {
   const pairs = await Promise.all(
-    relPaths.map(async (relPath): Promise<[string, Buffer]> => [
-      relPath,
-      await readFile(join(rootAbs, relPath)),
-    ]),
+    relPaths.map(async (relPath): Promise<[string, Buffer] | undefined> => {
+      try {
+        return [relPath, await readFile(join(rootAbs, relPath))];
+      } catch (error) {
+        if (isErrnoException(error) && error.code === "ENOENT") {
+          return undefined;
+        }
+        throw error;
+      }
+    }),
   );
-  return new Map(pairs);
+  return new Map(
+    pairs.filter((pair): pair is [string, Buffer] => pair !== undefined),
+  );
 };
+

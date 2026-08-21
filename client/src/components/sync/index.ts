@@ -33,6 +33,7 @@ import { emitEnvironment } from "./core/generate";
 import { errorsIn } from "./core/log";
 import {
   Snapshot,
+  FileTimes,
   buildSnapshot,
   loadSnapshot,
   toPosix,
@@ -186,6 +187,27 @@ const clearForceResync = async (): Promise<void> => {
   await setContextValue(FORCE_RESYNC_CONTEXT_KEY, "");
 };
 
+const isErrnoException = (error: unknown): error is NodeJS.ErrnoException =>
+  error instanceof Error && "code" in error;
+
+/**
+ * Force every current file to be re-pushed without losing track of what
+ * should be deleted.
+ *
+ * A naive "force" that diffs against an empty snapshot also empties the
+ * delete/rmdir lists, since removal is detected by a path being in before
+ * but not after - so a forced resync would silently stop cleaning up files
+ * removed locally since the last successful sync. Reusing the diff already
+ * computed against the real snapshot keeps those deletes intact.
+ */
+const forceFullPut = (
+  diff: ReturnType<typeof computeDiff>,
+  after: FileTimes,
+): ReturnType<typeof computeDiff> => ({
+  ...diff,
+  put: Object.keys(after).sort(),
+});
+
 const computeManifestHash = async (
   syncRoot: string,
   relPaths: string[],
@@ -194,8 +216,20 @@ const computeManifestHash = async (
   const sorted = [...relPaths].sort();
 
   for (const relPath of sorted) {
+    let content: string;
+    try {
+      content = await readFile(join(syncRoot, relPath), "utf8");
+    } catch (error) {
+      // Gone since collectEntries stat'd it moments ago - treat like any
+      // other file git no longer sees, rather than failing the whole sync.
+      if (isErrnoException(error) && error.code === "ENOENT") {
+        continue;
+      }
+      throw error;
+    }
+
     const fileHash = createHash("sha256");
-    fileHash.update(await readFile(join(syncRoot, relPath), "utf8"));
+    fileHash.update(content);
 
     manifestHash.update(toPosix(relPath));
     manifestHash.update("\0");
@@ -220,6 +254,23 @@ const axiosStatus = (error: unknown): number | undefined => {
 };
 
 const createFileSystemApi = () => FileSystemApi(getApiConfig());
+
+/**
+ * The generated compute client types an upload body as a browser File, but
+ * this extension runs in Node and the API accepts any octet-stream bytes -
+ * a Buffer works fine at runtime. Centralized here so the mismatch is
+ * documented and audited once instead of at every call site.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+const asRequestBody = (buffer: Buffer): File => buffer as unknown as File;
+
+/**
+ * getFileContentFromSystem is typed as returning void, but with
+ * responseType: "arraybuffer" the response data is actually a Buffer.
+ */
+const asArrayBufferLike = (data: unknown): ArrayBufferLike =>
+  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+  data as unknown as ArrayBufferLike;
 
 const TRANSFER_CONCURRENCY = 8;
 
@@ -336,7 +387,7 @@ const remoteManifestHash = async (
     );
 
     // The endpoint returns binary data; decode and use the first line.
-    const raw = Buffer.from(response.data as unknown as ArrayBufferLike)
+    const raw = Buffer.from(asArrayBufferLike(response.data))
       .toString("utf8")
       .trim();
     if (!raw) {
@@ -392,8 +443,7 @@ const applyDiffWithApi = async (
     await api.updateFileContentOnSystem({
       sessionId,
       filePath: toComputePath(absPath),
-      // Generated types require File, but API accepts octet-stream bytes.
-      body: content as unknown as File,
+      body: asRequestBody(content),
       ifMatch: await getEtag(sessionId, absPath),
     });
   });
@@ -450,7 +500,7 @@ const writeRemoteManifest = async (
   await api.updateFileContentOnSystem({
     sessionId,
     filePath: toComputePath(path),
-    body: Buffer.from(`${hash}\n`, "utf8") as unknown as File,
+    body: asRequestBody(Buffer.from(`${hash}\n`, "utf8")),
     ifMatch: await getEtag(sessionId, path),
   });
 };
@@ -545,9 +595,10 @@ export const syncWorkspace = async (
     const entries = await collectEntries(syncRoot, relPaths);
     const after = buildSnapshot(remoteRoot, entries);
     const before = await readSnapshot(remoteRoot);
-    let diff = force
-      ? computeDiff(after.lastModified, {})
-      : computeDiff(after.lastModified, before.lastModified);
+    let diff = computeDiff(after.lastModified, before.lastModified);
+    if (force) {
+      diff = forceFullPut(diff, after.lastModified);
+    }
     let forceTransfer = force;
     // A pure function of (relPaths, mtimes): the diff proves those are
     // unchanged from the last successful sync, so its cached hash can be
@@ -558,7 +609,12 @@ export const syncWorkspace = async (
         : undefined;
     const getLocalManifest = async (): Promise<string> => {
       if (!localManifest) {
-        localManifest = await computeManifestHash(syncRoot, relPaths);
+        // entries, not relPaths: git can still list a path deleted on disk
+        // but not yet `git rm`'d, and that path must not be read.
+        localManifest = await computeManifestHash(
+          syncRoot,
+          entries.map((entry) => entry.relPath),
+        );
       }
       return localManifest;
     };
@@ -575,7 +631,7 @@ export const syncWorkspace = async (
       const probeRelPath = entries[0]?.relPath;
       if (await remoteNeedsResync(sessionId, remoteRoot, probeRelPath)) {
         forceTransfer = true;
-        diff = computeDiff(after.lastModified, {});
+        diff = forceFullPut(diff, after.lastModified);
       } else {
         const [localHash, remoteHash] = await Promise.all([
           getLocalManifest(),
@@ -583,7 +639,7 @@ export const syncWorkspace = async (
         ]);
         if (localHash !== remoteHash) {
           forceTransfer = true;
-          diff = computeDiff(after.lastModified, {});
+          diff = forceFullPut(diff, after.lastModified);
         }
       }
     }
