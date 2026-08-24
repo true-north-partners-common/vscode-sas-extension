@@ -22,6 +22,71 @@ describe("sync/collect", () => {
   });
 
   describe("collectEntries", () => {
+    it("hashes a file's contents", async () => {
+      writeFileSync(join(root, "a.sas"), "abc");
+
+      const [entry] = await collectEntries(root, ["a.sas"]);
+
+      assert.strictEqual(
+        entry.hash,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      );
+      assert.strictEqual(entry.size, 3);
+    });
+
+    // The cheap gate. A steady-state run must not read the whole tree off
+    // disk, so an unchanged (mtime, size) reuses the recorded hash - proven
+    // here by seeding a deliberately wrong one and watching it come back.
+    it("reuses a known hash when mtime and size are unchanged", async () => {
+      const file = join(root, "a.sas");
+      writeFileSync(file, "abc");
+      const [first] = await collectEntries(root, ["a.sas"]);
+
+      const [second] = await collectEntries(root, ["a.sas"], {
+        "a.sas": {
+          mtimeMs: first.mtimeMs,
+          size: first.size,
+          hash: "stale-but-trusted",
+        },
+      });
+
+      assert.strictEqual(second.hash, "stale-but-trusted");
+    });
+
+    it("re-hashes when the size changed", async () => {
+      const file = join(root, "a.sas");
+      writeFileSync(file, "abc");
+      const [first] = await collectEntries(root, ["a.sas"]);
+
+      const [second] = await collectEntries(root, ["a.sas"], {
+        "a.sas": {
+          mtimeMs: first.mtimeMs,
+          size: first.size + 1,
+          hash: "stale",
+        },
+      });
+
+      assert.strictEqual(second.hash, first.hash);
+    });
+
+    // An mtime moving backwards is still a change. Comparing for inequality
+    // rather than "newer than" is what catches a stash pop or a restore.
+    it("re-hashes when the mtime moved backwards", async () => {
+      const file = join(root, "a.sas");
+      writeFileSync(file, "abc");
+      const [first] = await collectEntries(root, ["a.sas"]);
+
+      const [second] = await collectEntries(root, ["a.sas"], {
+        "a.sas": {
+          mtimeMs: first.mtimeMs + 5000,
+          size: first.size,
+          hash: "stale",
+        },
+      });
+
+      assert.strictEqual(second.hash, first.hash);
+    });
+
     it("drops a path that does not exist on disk", async () => {
       writeFileSync(join(root, "a.sas"), "a");
 

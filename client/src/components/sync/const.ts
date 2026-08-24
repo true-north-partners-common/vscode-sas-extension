@@ -23,5 +23,8 @@ export const Messages = {
   TooManyFiles: l10n.t(
     "Refusing to sync {count} files, which is over the limit of {maxFiles}. Narrow localRoot or raise maxFiles.",
   ),
+  SuspiciousDelete: l10n.t(
+    "Refusing to delete {count} of {tracked} synced files. This usually means fewer files were found than expected, so check localRoot, fileExtensions, and your .gitignore. Run Resync Workspace to SAS if the deletion is intended.",
+  ),
   Syncing: l10n.t("Syncing workspace to SAS..."),
 };

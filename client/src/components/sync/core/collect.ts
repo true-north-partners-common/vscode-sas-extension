@@ -1,32 +1,53 @@
 // Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
+import { Stats } from "fs";
 import { readFile, stat } from "fs/promises";
 import { join } from "path";
 
-import { FileEntry } from "./snapshot";
+import { hashFile } from "./hash";
+import { FileEntry, FileStamps, toPosix } from "./snapshot";
 
 /**
- * Stat every discovered path, dropping anything unreadable.
+ * Stat every discovered path and attach its content hash, dropping anything
+ * unreadable.
  *
  * `git ls-files --cached` reports files that are still tracked but no longer
  * on disk (deleted without `git rm`), so a missing file here is expected
  * rather than exceptional - it simply falls out of the snapshot and the diff
  * then treats it as a deletion.
+ *
+ * `known` is the previous snapshot's stamps. When a path's mtime and size
+ * both match, its hash is taken from there rather than re-read: that is what
+ * keeps a steady-state run from reading the whole tree off disk. Anything
+ * else is hashed, so a file whose timestamp lies in either direction is
+ * still compared on its actual bytes.
  */
 export const collectEntries = async (
   rootAbs: string,
   relPaths: string[],
+  known: FileStamps = {},
 ): Promise<FileEntry[]> => {
   const entries = await Promise.all(
     relPaths.map(async (relPath) => {
+      let stats: Stats;
       try {
-        const stats = await stat(join(rootAbs, relPath));
-        return stats.isFile()
-          ? { relPath, mtimeMs: Math.floor(stats.mtimeMs) }
-          : undefined;
+        stats = await stat(join(rootAbs, relPath));
       } catch {
         return undefined;
       }
+      if (!stats.isFile()) {
+        return undefined;
+      }
+
+      const mtimeMs = Math.floor(stats.mtimeMs);
+      const size = stats.size;
+      const cached = known[toPosix(relPath)];
+      if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
+        return { relPath, mtimeMs, size, hash: cached.hash };
+      }
+
+      const hash = await hashFile(join(rootAbs, relPath));
+      return hash === undefined ? undefined : { relPath, mtimeMs, size, hash };
     }),
   );
 
@@ -64,4 +85,3 @@ export const readContents = async (
     pairs.filter((pair): pair is [string, Buffer] => pair !== undefined),
   );
 };
-

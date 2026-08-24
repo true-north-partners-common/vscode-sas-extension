@@ -63,7 +63,8 @@ const isIgnoredSourceDefinitionUnauthorized = (
  */
 export const errorsIn = (logs: LogLine[]): string[] =>
   logs
-    .filter((log, i, all) =>
-      isError(log) && !isIgnoredSourceDefinitionUnauthorized(all, i),
+    .filter(
+      (log, i, all) =>
+        isError(log) && !isIgnoredSourceDefinitionUnauthorized(all, i),
     )
     .map((log) => log.line.trim());

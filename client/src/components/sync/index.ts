@@ -9,11 +9,8 @@ import {
   workspace,
 } from "vscode";
 
-import { createHash } from "crypto";
-import { readFile } from "fs/promises";
-import { basename, extname, join, posix } from "path";
-
 import { AxiosError } from "axios";
+import { basename, extname, join, posix } from "path";
 
 import { profileConfig } from "../../commands/profile";
 import { FileSystemApi } from "../../connection/rest/api/compute";
@@ -23,17 +20,28 @@ import { getContextValue, setContextValue } from "../ExtensionContext";
 import { ConnectionType, ProfileSyncOptions } from "../profile";
 import { Messages } from "./const";
 import { collectEntries, readContents } from "./core/collect";
-import { computeDiff, diffIsEmpty } from "./core/diff";
-import { discover } from "./core/discover";
 import {
-  RemoteRootExpansionError,
-  resolveRemoteRoot,
-} from "./core/expand";
+  ContentMap,
+  Diff,
+  computeDiff,
+  diffIsEmpty,
+  isSuspiciousDelete,
+  reconcileWithRemote,
+} from "./core/diff";
+import { discover } from "./core/discover";
+import { RemoteRootExpansionError, resolveRemoteRoot } from "./core/expand";
 import { emitEnvironment } from "./core/generate";
 import { errorsIn } from "./core/log";
 import {
+  RemoteManifest,
+  manifestContents,
+  parseManifest,
+  serializeManifest,
+} from "./core/manifest";
+import { toComputePath } from "./core/path";
+import { FetchPage, listTree } from "./core/remote";
+import {
   Snapshot,
-  FileTimes,
   buildSnapshot,
   loadSnapshot,
   toPosix,
@@ -43,7 +51,12 @@ type SyncConfig = NonNullable<ProfileSyncOptions["sync"]>;
 
 const DEFAULT_MAX_FILES = 2000;
 const DEFAULT_SYNC_FILE_EXTENSIONS = [".sas", ".inc"];
-const MANIFEST_FILE_NAME = ".sas-sync-manifest.sha256";
+/**
+ * The remote inventory. It is never listed in itself, so it can never appear
+ * in a diff as an orphan and delete itself - the failure mode that turns a
+ * manifest kept inside the synced tree into an infinite loop.
+ */
+const MANIFEST_FILE_NAME = ".sas-sync-manifest.json";
 
 /**
  * The macro variable always points at remoteRoot, so the only thing worth
@@ -52,7 +65,6 @@ const MANIFEST_FILE_NAME = ".sas-sync-manifest.sha256";
  */
 const DEFAULT_ROOT_MACRO_VAR = "REPO";
 const FORCE_RESYNC_CONTEXT_KEY = "SAS.sync.forceResync";
-const SAS_FILE_SEPARATOR = "~fs~";
 
 /**
  * Submit, and refuse to call it a success if SAS disagreed.
@@ -94,6 +106,23 @@ const ensureEnvironment = async (
   }
   await runChecked(session, environment);
   lastEnvironmentBySession.set(session, environment);
+};
+
+/**
+ * Remote roots whose contents have been listed for this session.
+ *
+ * Listing costs a request per directory, which is too much to repeat before
+ * every execution. Once per session is the useful cadence: within one
+ * session the server does not lose files on its own, whereas a new session
+ * can mean a new pod on a new node with nothing on it. Resync forces a
+ * fresh look for the rarer cases - another developer, or an admin cleanup.
+ */
+const verifiedRootsBySession = new WeakMap<Session, Set<string>>();
+
+const markVerified = (session: Session, remoteRoot: string): void => {
+  const roots = verifiedRootsBySession.get(session) ?? new Set<string>();
+  roots.add(remoteRoot);
+  verifiedRootsBySession.set(session, roots);
 };
 
 /**
@@ -187,61 +216,44 @@ const clearForceResync = async (): Promise<void> => {
   await setContextValue(FORCE_RESYNC_CONTEXT_KEY, "");
 };
 
-const isErrnoException = (error: unknown): error is NodeJS.ErrnoException =>
-  error instanceof Error && "code" in error;
-
 /**
- * Force every current file to be re-pushed without losing track of what
- * should be deleted.
+ * Re-push every current file without losing track of what should be deleted.
  *
- * A naive "force" that diffs against an empty snapshot also empties the
- * delete/rmdir lists, since removal is detected by a path being in before
- * but not after - so a forced resync would silently stop cleaning up files
- * removed locally since the last successful sync. Reusing the diff already
- * computed against the real snapshot keeps those deletes intact.
+ * Diffing against an empty inventory would also empty the delete list, since
+ * removal is detected by a path being known remotely but absent locally - so
+ * a forced resync would silently stop cleaning up files removed since the
+ * last sync. Reusing the diff computed against the real manifest keeps those
+ * deletes, and moves become redundant once everything is uploaded anyway.
  */
-const forceFullPut = (
-  diff: ReturnType<typeof computeDiff>,
-  after: FileTimes,
-): ReturnType<typeof computeDiff> => ({
+const forceFullPut = (diff: Diff, contents: ContentMap): Diff => ({
   ...diff,
-  put: Object.keys(after).sort(),
+  put: Object.keys(contents).sort(),
+  move: [],
 });
 
-const computeManifestHash = async (
-  syncRoot: string,
-  relPaths: string[],
-): Promise<string> => {
-  const manifestHash = createHash("sha256");
-  const sorted = [...relPaths].sort();
-
-  for (const relPath of sorted) {
-    let content: string;
-    try {
-      content = await readFile(join(syncRoot, relPath), "utf8");
-    } catch (error) {
-      // Gone since collectEntries stat'd it moments ago - treat like any
-      // other file git no longer sees, rather than failing the whole sync.
-      if (isErrnoException(error) && error.code === "ENOENT") {
-        continue;
-      }
-      throw error;
-    }
-
-    const fileHash = createHash("sha256");
-    fileHash.update(content);
-
-    manifestHash.update(toPosix(relPath));
-    manifestHash.update("\0");
-    manifestHash.update(fileHash.digest("hex"));
-    manifestHash.update("\n");
+/**
+ * Refuse to propagate a deletion that looks like a misconfiguration.
+ *
+ * Force is the deliberate escape hatch: a user invoking resync explicitly
+ * has said what they meant, whereas the automatic path runs before every
+ * execution and is where a silent wipe would go unnoticed.
+ */
+const assertDeletesAreSane = (
+  diff: Diff,
+  tracked: number,
+  force: boolean,
+): void => {
+  if (force || !isSuspiciousDelete(diff.delete.length, tracked)) {
+    return;
   }
 
-  return manifestHash.digest("hex");
+  throw new Error(
+    l10n.t(Messages.SuspiciousDelete, {
+      count: diff.delete.length,
+      tracked,
+    }),
+  );
 };
-
-const toComputePath = (absolutePosixPath: string): string =>
-  absolutePosixPath.split("/").join(SAS_FILE_SEPARATOR);
 
 const remotePathFromRel = (remoteRoot: string, relPath: string): string =>
   posix.join(remoteRoot, toPosix(relPath));
@@ -370,10 +382,64 @@ const ensureDirectory = async (
   }
 };
 
-const remoteManifestHash = async (
+/**
+ * Read the remote inventory.
+ *
+ * Undefined means "unknown", which is not the same as "empty": an unknown
+ * inventory has to be treated as a full re-push, whereas an empty one would
+ * also imply that every tracked path should be deleted. Conflating the two
+ * is how a missing manifest turns into a wiped directory.
+ */
+/**
+ * Every file under the remote root, relative to it.
+ *
+ * A missing root is not an error here - it simply means nothing is there,
+ * which the caller handles as "send everything".
+ */
+const listRemoteFiles = async (
   sessionId: string,
   remoteRoot: string,
-): Promise<string | undefined> => {
+): Promise<string[]> => {
+  const api = createFileSystemApi();
+
+  const fetchPage: FetchPage = async (absDirPath, start, limit) => {
+    const response = await api.getDirectoryMembers({
+      sessionId,
+      directoryPath: toComputePath(absDirPath),
+      // Dotfiles count: the manifest is one, and so are files a repo
+      // legitimately tracks.
+      showAll: true,
+      start,
+      limit,
+    });
+
+    const items = (response.data.items ?? [])
+      .map((item) => ({
+        name: item.name ?? "",
+        isDirectory: Boolean(item.isDirectory),
+      }))
+      .filter(
+        (member) =>
+          member.name !== "" && member.name !== "." && member.name !== "..",
+      );
+
+    return { items, count: response.data.count };
+  };
+
+  try {
+    return await listTree(remoteRoot, fetchPage);
+  } catch (error) {
+    if (axiosStatus(error) === 404) {
+      return [];
+    }
+    throw error;
+  }
+};
+
+const readRemoteManifest = async (
+  sessionId: string,
+  remoteRoot: string,
+): Promise<RemoteManifest | undefined> => {
   const api = createFileSystemApi();
   try {
     const response = await api.getFileContentFromSystem(
@@ -386,14 +452,9 @@ const remoteManifestHash = async (
       },
     );
 
-    // The endpoint returns binary data; decode and use the first line.
-    const raw = Buffer.from(asArrayBufferLike(response.data))
-      .toString("utf8")
-      .trim();
-    if (!raw) {
-      return undefined;
-    }
-    return raw.split(/\r?\n/, 1)[0].trim() || undefined;
+    return parseManifest(
+      Buffer.from(asArrayBufferLike(response.data)).toString("utf8"),
+    );
   } catch (error) {
     if (axiosStatus(error) === 404) {
       return undefined;
@@ -402,67 +463,197 @@ const remoteManifestHash = async (
   }
 };
 
-const remoteNeedsResync = async (
+/**
+ * Directories confirmed to exist for this transfer.
+ *
+ * ensureDirectory previously issued a HEAD for every uploaded file, so a
+ * folder holding two hundred files was probed two hundred times for an
+ * answer that could not change during the run.
+ */
+type DirectoryCache = Set<string>;
+
+const ensureDirectoryCached = async (
   sessionId: string,
-  remoteRoot: string,
-  probeRelPath?: string,
-): Promise<boolean> => {
-  const probePath = probeRelPath
-    ? remotePathFromRel(remoteRoot, probeRelPath)
-    : remoteRoot;
-  return !(await pathExists(sessionId, probePath));
+  absolutePosixPath: string,
+  known: DirectoryCache,
+): Promise<void> => {
+  if (known.has(absolutePosixPath)) {
+    return;
+  }
+  await ensureDirectory(sessionId, absolutePosixPath);
+  known.add(absolutePosixPath);
 };
+
+/**
+ * Upload one file, conditionally when we know what we are replacing.
+ *
+ * An ETag is required to replace an existing file but must be absent when
+ * creating one, and the manifest already records the ETag from the last
+ * write - so the usual HEAD-then-PUT is unnecessary. Losing that race (the
+ * file changed underneath us, or the manifest is stale) comes back as a
+ * precondition failure, which is better information than a HEAD could have
+ * given us anyway: it means someone else touched the file.
+ */
+const putFile = async (
+  sessionId: string,
+  absPath: string,
+  content: Buffer,
+  knownEtag: string | undefined,
+): Promise<string | undefined> => {
+  const api = createFileSystemApi();
+  const write = (ifMatch: string | undefined) =>
+    api.updateFileContentOnSystem({
+      sessionId,
+      filePath: toComputePath(absPath),
+      body: asRequestBody(content),
+      ifMatch,
+    });
+
+  let response;
+  try {
+    response = await write(knownEtag);
+  } catch (error) {
+    const status = axiosStatus(error);
+    // 412 precondition failed, 428 precondition required, 409 conflict:
+    // all mean "your idea of this file is wrong". Re-read the truth once
+    // and retry, rather than failing a whole sync over a stale ETag.
+    if (status !== 412 && status !== 428 && status !== 409) {
+      throw error;
+    }
+    response = await write(await getEtag(sessionId, absPath));
+  }
+
+  const etag = response.headers?.etag;
+  return typeof etag === "string" ? etag : undefined;
+};
+
+/**
+ * Delete without first asking for an ETag.
+ *
+ * The generated client marks ifMatch required, but an empty value is what
+ * the rest of this extension sends for deletes and it is accepted; spending
+ * a HEAD to fetch a value we then fall back to "" for bought nothing. A 404
+ * is success by another name.
+ */
+const deleteRemote = async (
+  sessionId: string,
+  absPath: string,
+): Promise<void> => {
+  const api = createFileSystemApi();
+  await api.deleteFileOrDirectoryFromSystem({
+    sessionId,
+    fileOrDirectoryPath: toComputePath(absPath),
+    ifMatch: "",
+  });
+};
+
+export interface TransferOutcome {
+  /** Manifest entries for everything now known to be on the server. */
+  written: RemoteManifest;
+  /** Source paths of moves the server actually performed. */
+  movedFrom: string[];
+  /** Paths whose delete was attempted but did not succeed. */
+  failedDeletes: string[];
+}
 
 const applyDiffWithApi = async (
   sessionId: string,
   remoteRoot: string,
-  diff: ReturnType<typeof computeDiff>,
+  diff: Diff,
   contents: Map<string, Buffer>,
-): Promise<void> => {
+  hashes: ContentMap,
+  known: RemoteManifest,
+  token?: CancellationToken,
+): Promise<TransferOutcome> => {
   const api = createFileSystemApi();
+  const directories: DirectoryCache = new Set();
+  const written: RemoteManifest = {};
+  const movedFrom: string[] = [];
+  const failedDeletes: string[] = [];
 
-  await ensureDirectory(sessionId, remoteRoot);
+  const stopIfCancelled = () => {
+    if (token?.isCancellationRequested) {
+      throw new CancellationError();
+    }
+  };
+
+  await ensureDirectoryCached(sessionId, remoteRoot, directories);
 
   // Leaf directories are independent of one another (collapseToLeaves
   // already dropped ancestors), and ensureDirectory tolerates a 409 from a
   // shared parent created by a concurrent lane, so this is safe to run in
   // parallel.
   await runConcurrently(diff.mkdir, (relativeDirPath) =>
-    ensureDirectory(sessionId, remotePathFromRel(remoteRoot, relativeDirPath)),
+    ensureDirectoryCached(
+      sessionId,
+      remotePathFromRel(remoteRoot, relativeDirPath),
+      directories,
+    ),
   );
 
+  // Moves first: a rename is bytes the server already holds, so doing these
+  // before the uploads keeps them out of the transfer entirely.
+  for (const { from, to } of diff.move) {
+    stopIfCancelled();
+    const fromAbs = remotePathFromRel(remoteRoot, from);
+    const toAbs = remotePathFromRel(remoteRoot, to);
+    await ensureDirectoryCached(sessionId, posix.dirname(toAbs), directories);
+
+    try {
+      await api.updateFileOrDirectoryOnSystem({
+        sessionId,
+        fileOrDirectoryPath: toComputePath(fromAbs),
+        ifMatch: known[from]?.etag ?? "",
+        // The path element is a plain path: unlike the URI segment above it
+        // must not be ~fs~ encoded.
+        fileProperties: {
+          name: posix.basename(toAbs),
+          path: posix.dirname(toAbs),
+        },
+        overwrite: true,
+      });
+      written[to] = { hash: hashes[to] };
+      movedFrom.push(from);
+    } catch {
+      // A move is only an optimization. If the server will not do it, fall
+      // back to uploading the destination and deleting the source, which is
+      // exactly what the diff would have said without rename detection.
+      diff.put.push(to);
+      diff.delete.push(from);
+    }
+  }
+
   await runConcurrently(diff.put, async (relPath) => {
+    stopIfCancelled();
     const absPath = remotePathFromRel(remoteRoot, relPath);
-    await ensureDirectory(sessionId, posix.dirname(absPath));
+    await ensureDirectoryCached(sessionId, posix.dirname(absPath), directories);
 
     const content = contents.get(toPosix(relPath));
     if (!content) {
       return;
     }
 
-    await api.updateFileContentOnSystem({
+    const etag = await putFile(
       sessionId,
-      filePath: toComputePath(absPath),
-      body: asRequestBody(content),
-      ifMatch: await getEtag(sessionId, absPath),
-    });
+      absPath,
+      content,
+      known[relPath]?.etag,
+    );
+    written[relPath] = { hash: hashes[relPath], etag };
   });
 
   await runConcurrently(diff.delete, async (relPath) => {
-    const absPath = remotePathFromRel(remoteRoot, relPath);
-    const etag = await getEtag(sessionId, absPath);
-    if (!etag && !(await pathExists(sessionId, absPath))) {
-      return;
-    }
-
+    stopIfCancelled();
     try {
-      await api.deleteFileOrDirectoryFromSystem({
-        sessionId,
-        fileOrDirectoryPath: toComputePath(absPath),
-        ifMatch: etag || "",
-      });
-    } catch {
-      // Keep deletes best-effort to preserve current sync behavior.
+      await deleteRemote(sessionId, remotePathFromRel(remoteRoot, relPath));
+    } catch (error) {
+      if (axiosStatus(error) === 404) {
+        return;
+      }
+      // Recorded rather than swallowed: a file that would not delete is
+      // still on the server, and the manifest must keep saying so or the
+      // next run will believe the tree is clean.
+      failedDeletes.push(relPath);
     }
   });
 
@@ -470,39 +661,66 @@ const applyDiffWithApi = async (
   // before its parent's removal is attempted, which parallel lanes would not
   // preserve.
   for (const relativeDirPath of diff.rmdir) {
-    const absPath = remotePathFromRel(remoteRoot, relativeDirPath);
-    const etag = await getEtag(sessionId, absPath);
-    if (!etag && !(await pathExists(sessionId, absPath))) {
-      continue;
-    }
-
     try {
-      await api.deleteFileOrDirectoryFromSystem({
+      await deleteRemote(
         sessionId,
-        fileOrDirectoryPath: toComputePath(absPath),
-        ifMatch: etag || "",
-      });
+        remotePathFromRel(remoteRoot, relativeDirPath),
+      );
     } catch {
       // Extra server files can keep directories non-empty; ignore and proceed.
     }
   }
+
+  return { written, movedFrom, failedDeletes };
 };
 
 const writeRemoteManifest = async (
   sessionId: string,
   remoteRoot: string,
-  hash: string,
+  manifest: RemoteManifest,
 ): Promise<void> => {
-  const api = createFileSystemApi();
   const path = manifestPath(remoteRoot);
-
-  await ensureDirectory(sessionId, posix.dirname(path));
-  await api.updateFileContentOnSystem({
+  await putFile(
     sessionId,
-    filePath: toComputePath(path),
-    body: asRequestBody(Buffer.from(`${hash}\n`, "utf8")),
-    ifMatch: await getEtag(sessionId, path),
-  });
+    path,
+    Buffer.from(serializeManifest(manifest), "utf8"),
+    await getEtag(sessionId, path),
+  );
+};
+
+/**
+ * The inventory to record after a transfer.
+ *
+ * Built from what the server was known to hold, adjusted by what actually
+ * happened rather than by what was planned: a delete that failed leaves its
+ * entry in place, so the next run still knows the file is there instead of
+ * concluding the tree is clean.
+ */
+const nextManifest = (
+  known: RemoteManifest,
+  diff: Diff,
+  outcome: TransferOutcome,
+): RemoteManifest => {
+  const next: RemoteManifest = { ...known };
+  const failed = new Set(outcome.failedDeletes);
+
+  for (const relPath of diff.delete) {
+    if (!failed.has(relPath)) {
+      delete next[relPath];
+    }
+  }
+  for (const relPath of outcome.movedFrom) {
+    delete next[relPath];
+  }
+
+  return { ...next, ...outcome.written };
+};
+
+const saveSnapshot = async (
+  remoteRoot: string,
+  snapshot: Snapshot,
+): Promise<void> => {
+  await setContextValue(snapshotKey(remoteRoot), JSON.stringify(snapshot));
 };
 
 /**
@@ -592,32 +810,55 @@ export const syncWorkspace = async (
       );
     }
 
-    const entries = await collectEntries(syncRoot, relPaths);
-    const after = buildSnapshot(remoteRoot, entries);
     const before = await readSnapshot(remoteRoot);
-    let diff = computeDiff(after.lastModified, before.lastModified);
-    if (force) {
-      diff = forceFullPut(diff, after.lastModified);
+    // The previous stamps let unchanged files skip being re-read; anything
+    // whose mtime or size moved is hashed afresh.
+    const entries = await collectEntries(syncRoot, relPaths, before.files);
+    const after = buildSnapshot(remoteRoot, entries);
+
+    const localContents: ContentMap = Object.fromEntries(
+      Object.entries(after.files).map(([relPath, stamp]) => [
+        relPath,
+        stamp.hash,
+      ]),
+    );
+
+    // The server is the authority on what the server holds. An unreadable or
+    // absent manifest means we cannot know, so everything is re-sent - and
+    // crucially nothing is deleted, because an unknown inventory must not be
+    // read as an empty one.
+    const remoteManifest = await readRemoteManifest(sessionId, remoteRoot);
+    const known = remoteManifest ?? {};
+    let diff = computeDiff(localContents, manifestContents(known));
+
+    // The manifest says what we wrote, not what is there now. Once per
+    // session - and on every resync - look at the server itself, so a file
+    // deleted out of band comes back rather than being written off as
+    // matching. This is what makes it a mirror instead of a change log.
+    const verified = verifiedRootsBySession.get(session)?.has(remoteRoot);
+    let trackedRemotely = Object.keys(known).length;
+    if (!verified || force) {
+      const present = new Set(await listRemoteFiles(sessionId, remoteRoot));
+      const managed = normalizeExtensions(config.fileExtensions);
+      diff = reconcileWithRemote(
+        diff,
+        localContents,
+        present,
+        (relPath) =>
+          relPath !== MANIFEST_FILE_NAME &&
+          managed.has(extname(relPath).toLowerCase()),
+      );
+      // The listing can reveal more than the manifest knew about - a lost or
+      // corrupt manifest with a full tree behind it being the dangerous
+      // case, since a guard measured against an empty manifest would wave
+      // through a wipe of everything the listing just found.
+      trackedRemotely = Math.max(trackedRemotely, present.size);
     }
-    let forceTransfer = force;
-    // A pure function of (relPaths, mtimes): the diff proves those are
-    // unchanged from the last successful sync, so its cached hash can be
-    // reused instead of re-reading and re-hashing every file.
-    let localManifest: string | undefined =
-      diffIsEmpty(diff) && diff.mkdir.length === 0
-        ? before.manifestHash
-        : undefined;
-    const getLocalManifest = async (): Promise<string> => {
-      if (!localManifest) {
-        // entries, not relPaths: git can still list a path deleted on disk
-        // but not yet `git rm`'d, and that path must not be read.
-        localManifest = await computeManifestHash(
-          syncRoot,
-          entries.map((entry) => entry.relPath),
-        );
-      }
-      return localManifest;
-    };
+
+    assertDeletesAreSane(diff, trackedRemotely, force);
+    if (force) {
+      diff = forceFullPut(diff, localContents);
+    }
 
     // Computed on every run since remoteRoot can vary by workspace folder,
     // but only resubmitted when it actually changes for this session.
@@ -627,56 +868,55 @@ export const syncWorkspace = async (
       rootMacroVar: config.rootMacroVar ?? DEFAULT_ROOT_MACRO_VAR,
     });
 
-    if (diffIsEmpty(diff) && diff.mkdir.length === 0) {
-      const probeRelPath = entries[0]?.relPath;
-      if (await remoteNeedsResync(sessionId, remoteRoot, probeRelPath)) {
-        forceTransfer = true;
-        diff = forceFullPut(diff, after.lastModified);
-      } else {
-        const [localHash, remoteHash] = await Promise.all([
-          getLocalManifest(),
-          remoteManifestHash(sessionId, remoteRoot),
-        ]);
-        if (localHash !== remoteHash) {
-          forceTransfer = true;
-          diff = forceFullPut(diff, after.lastModified);
-        }
-      }
-    }
+    const nothingToDo =
+      !force &&
+      remoteManifest !== undefined &&
+      diffIsEmpty(diff) &&
+      diff.mkdir.length === 0;
 
-    if (!forceTransfer && diffIsEmpty(diff) && diff.mkdir.length === 0) {
+    if (nothingToDo) {
       await ensureEnvironment(session, environment);
-      // Only a freshly computed hash (not the one already in before) needs
-      // writing back - otherwise this is a no-op every steady-state run.
-      if (localManifest && localManifest !== before.manifestHash) {
-        await setContextValue(
-          snapshotKey(remoteRoot),
-          JSON.stringify({ ...after, manifestHash: localManifest }),
-        );
-      }
+      await saveSnapshot(remoteRoot, after);
+      markVerified(session, remoteRoot);
       return true;
     }
 
-    const contents = await readContents(
-      syncRoot,
-      diff.put.map((relPath) => toPosix(relPath)),
-    );
+    // Move destinations are read too. A server-side move is only an
+    // optimization, and when it fails the transfer falls back to uploading
+    // the destination - which needs bytes in hand, since by then there is no
+    // way back to the filesystem. Reading locally is cheap; it is the upload
+    // a rename avoids, not the read.
+    const contents = await readContents(syncRoot, [
+      ...diff.put.map((relPath) => toPosix(relPath)),
+      ...diff.move.map(({ to }) => toPosix(to)),
+    ]);
 
     if (token?.isCancellationRequested) {
       throw new CancellationError();
     }
 
-    await applyDiffWithApi(sessionId, remoteRoot, diff, contents);
-    await writeRemoteManifest(sessionId, remoteRoot, await getLocalManifest());
+    const outcome = await applyDiffWithApi(
+      sessionId,
+      remoteRoot,
+      diff,
+      contents,
+      localContents,
+      known,
+      token,
+    );
+
+    await writeRemoteManifest(
+      sessionId,
+      remoteRoot,
+      nextManifest(known, diff, outcome),
+    );
 
     await ensureEnvironment(session, environment);
 
     // Reached only on clean transfer and environment setup, so the snapshot
     // records what actually landed and a failure re-sends next time.
-    await setContextValue(
-      snapshotKey(remoteRoot),
-      JSON.stringify({ ...after, manifestHash: await getLocalManifest() }),
-    );
+    await saveSnapshot(remoteRoot, after);
+    markVerified(session, remoteRoot);
     await clearForceResync();
     return true;
   } finally {
