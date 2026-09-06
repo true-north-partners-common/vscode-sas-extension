@@ -31,11 +31,26 @@ export abstract class Session {
   async setup(silent?: boolean): Promise<void> {
     // If we already have a connection promise we're awaiting, lets use that.
     // Otherwise, establish a new connection
-    this._connectionPromise ||= this.establishConnection();
+    const connectionPromise = (this._connectionPromise ||=
+      this.establishConnection());
+
+    // Clear the memo however the attempt ends, not just when it succeeds.
+    // A retained rejection wedges the session for good: every later setup()
+    // short-circuits on the settled promise and re-throws the original
+    // failure without ever trying to connect again.
+    const awaitConnection = async () => {
+      try {
+        return await connectionPromise;
+      } finally {
+        // close() may have cleared it, or a later attempt replaced it.
+        if (this._connectionPromise === connectionPromise) {
+          this._connectionPromise = undefined;
+        }
+      }
+    };
+
     if (silent) {
-      const resolvedData = await this._connectionPromise;
-      this._connectionPromise = undefined;
-      return resolvedData;
+      return await awaitConnection();
     }
 
     await window.withProgress(
@@ -43,11 +58,7 @@ export abstract class Session {
         location: ProgressLocation.Notification,
         title: l10n.t("Connecting to SAS session..."),
       },
-      async () => {
-        const resolvedData = await this._connectionPromise;
-        this._connectionPromise = undefined;
-        return resolvedData;
-      },
+      awaitConnection,
     );
   }
 
