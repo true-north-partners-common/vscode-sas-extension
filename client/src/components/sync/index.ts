@@ -40,6 +40,7 @@ import {
 } from "./core/manifest";
 import { toComputePath } from "./core/path";
 import { FetchPage, listTree } from "./core/remote";
+import { sessionState } from "./core/sessionState";
 import {
   Snapshot,
   buildSnapshot,
@@ -92,24 +93,32 @@ const runChecked = async (session: Session, code: string): Promise<void> => {
   }
 };
 
-// Keyed by session identity so a reconnect (a new Session) re-applies, while
-// repeated runs against the same session skip a submission that would be a
-// no-op.
-const lastEnvironmentBySession = new WeakMap<Session, string>();
-
+/**
+ * Submit the environment program unless this compute session has already had
+ * exactly this one.
+ *
+ * The wiring is per-SAS-session state that dies with the session, so what
+ * matters is which compute session has seen it - not which Session object
+ * asked. Force is honoured because resync is the escape hatch for a session
+ * whose state we cannot see; a cache that ignored it would leave no way to
+ * re-apply the wiring short of restarting the extension host.
+ */
 const ensureEnvironment = async (
   session: Session,
+  sessionId: string,
   environment: string,
+  force: boolean,
 ): Promise<void> => {
-  if (!environment || lastEnvironmentBySession.get(session) === environment) {
+  const state = sessionState(sessionId);
+  if (!environment || (!force && state.environment === environment)) {
     return;
   }
   await runChecked(session, environment);
-  lastEnvironmentBySession.set(session, environment);
+  state.environment = environment;
 };
 
 /**
- * Remote roots whose contents have been listed for this session.
+ * Remote roots whose contents have been listed for this compute session.
  *
  * Listing costs a request per directory, which is too much to repeat before
  * every execution. Once per session is the useful cadence: within one
@@ -117,13 +126,12 @@ const ensureEnvironment = async (
  * can mean a new pod on a new node with nothing on it. Resync forces a
  * fresh look for the rarer cases - another developer, or an admin cleanup.
  */
-const verifiedRootsBySession = new WeakMap<Session, Set<string>>();
-
-const markVerified = (session: Session, remoteRoot: string): void => {
-  const roots = verifiedRootsBySession.get(session) ?? new Set<string>();
-  roots.add(remoteRoot);
-  verifiedRootsBySession.set(session, roots);
+const markVerified = (sessionId: string, remoteRoot: string): void => {
+  sessionState(sessionId).verifiedRoots.add(remoteRoot);
 };
+
+const isVerified = (sessionId: string, remoteRoot: string): boolean =>
+  sessionState(sessionId).verifiedRoots.has(remoteRoot);
 
 /**
  * The snapshot is stored per remote root, so two targets cannot clobber each
@@ -835,7 +843,7 @@ export const syncWorkspace = async (
     // session - and on every resync - look at the server itself, so a file
     // deleted out of band comes back rather than being written off as
     // matching. This is what makes it a mirror instead of a change log.
-    const verified = verifiedRootsBySession.get(session)?.has(remoteRoot);
+    const verified = isVerified(sessionId, remoteRoot);
     let trackedRemotely = Object.keys(known).length;
     if (!verified || force) {
       const present = new Set(await listRemoteFiles(sessionId, remoteRoot));
@@ -875,9 +883,9 @@ export const syncWorkspace = async (
       diff.mkdir.length === 0;
 
     if (nothingToDo) {
-      await ensureEnvironment(session, environment);
+      await ensureEnvironment(session, sessionId, environment, force);
       await saveSnapshot(remoteRoot, after);
-      markVerified(session, remoteRoot);
+      markVerified(sessionId, remoteRoot);
       return true;
     }
 
@@ -911,12 +919,12 @@ export const syncWorkspace = async (
       nextManifest(known, diff, outcome),
     );
 
-    await ensureEnvironment(session, environment);
+    await ensureEnvironment(session, sessionId, environment, force);
 
     // Reached only on clean transfer and environment setup, so the snapshot
     // records what actually landed and a failure re-sends next time.
     await saveSnapshot(remoteRoot, after);
-    markVerified(session, remoteRoot);
+    markVerified(sessionId, remoteRoot);
     await clearForceResync();
     return true;
   } finally {
