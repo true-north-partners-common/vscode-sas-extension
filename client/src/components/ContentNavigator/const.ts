@@ -44,6 +44,15 @@ export const FOLDER_TYPES = [
   TRASH_FOLDER_TYPE,
 ];
 
+export const SERVER_FAVORITES_FOLDER_ID = "SERVER_FAVORITES_FOLDER_ID";
+export const SAS_SERVER_FAVORITES_FOLDER = createStaticFolder(
+  SERVER_FAVORITES_FOLDER_ID,
+  l10n.t("My Favorites"),
+  FAVORITES_FOLDER_TYPE,
+  "/",
+  "getDirectoryMembers",
+);
+
 export const SAS_CONTENT_ROOT_FOLDERS = [
   "@myFavorites",
   "@myFolder",
@@ -51,7 +60,10 @@ export const SAS_CONTENT_ROOT_FOLDERS = [
   "@myRecycleBin",
 ];
 
-export const SAS_SERVER_ROOT_FOLDERS = ["@sasServerRoot"];
+export const SAS_SERVER_ROOT_FOLDERS = [
+  "@sasServerFavorites",
+  "@sasServerRoot",
+];
 
 export const ALL_ROOT_FOLDERS = [
   ...SAS_CONTENT_ROOT_FOLDERS,

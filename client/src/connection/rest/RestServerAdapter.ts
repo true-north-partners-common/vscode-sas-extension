@@ -8,10 +8,17 @@ import { getSession } from "..";
 import {
   FOLDER_TYPES,
   Messages,
+  SAS_SERVER_FAVORITES_FOLDER,
   SAS_SERVER_ROOT_FOLDER,
   SAS_SERVER_ROOT_FOLDERS,
+  SERVER_FAVORITES_FOLDER_ID,
   SERVER_FOLDER_ID,
 } from "../../components/ContentNavigator/const";
+import {
+  addServerFavorite,
+  readServerFavorites,
+  removeServerFavorite,
+} from "../../components/ContentNavigator/serverFavorites";
 import {
   AddChildItemProperties,
   ContentAdapter,
@@ -41,6 +48,26 @@ import {
 export const SAS_SERVER_HOME_DIRECTORY = "SAS_SERVER_HOME_DIRECTORY";
 const SAS_FILE_SEPARATOR = "~fs~";
 
+// The two folders we invent rather than read off the file system.
+const isSyntheticFolder = (item: ContentItem): boolean =>
+  [SERVER_FOLDER_ID, SERVER_FAVORITES_FOLDER_ID].includes(item.id);
+
+// Home is a real directory, but it is already the pane's entry point, so
+// there is nothing to gain from bookmarking it.
+const isFavoritable = (item: ContentItem): boolean =>
+  !isSyntheticFolder(item) && item.id !== SAS_SERVER_HOME_DIRECTORY;
+
+const rootFolderFor = (delegateFolderName: string) => {
+  switch (delegateFolderName) {
+    case "@sasServerRoot":
+      return SAS_SERVER_ROOT_FOLDER;
+    case "@sasServerFavorites":
+      return SAS_SERVER_FAVORITES_FOLDER;
+    default:
+      return {};
+  }
+};
+
 class RestServerAdapter implements ContentAdapter {
   protected baseUrl: string;
   protected fileSystemApi: ReturnType<typeof FileSystemApi>;
@@ -66,9 +93,24 @@ class RestServerAdapter implements ContentAdapter {
         ContextMenuAction.Update,
         ContextMenuAction.CopyPath,
         ContextMenuAction.AllowDownload,
+        ContextMenuAction.AddToFavorites,
+        ContextMenuAction.RemoveFromFavorites,
       ],
       {
-        [ContextMenuAction.CopyPath]: (item) => item.id !== SERVER_FOLDER_ID,
+        [ContextMenuAction.CopyPath]: (item) => !isSyntheticFolder(item),
+        // A favorite is a shortcut to a directory, not the directory itself.
+        // Renaming or deleting one would act on the original and leave the
+        // stored path dangling, so those stay on the item in the tree proper.
+        [ContextMenuAction.CreateChild]: (item) =>
+          item.permission.addMember && !item.flags?.isFavoriteEntry,
+        [ContextMenuAction.Delete]: (item) =>
+          item.permission.delete && !item.flags?.isFavoriteEntry,
+        [ContextMenuAction.Update]: (item) =>
+          item.permission.write && !item.flags?.isFavoriteEntry,
+        // The content pane keys this off the content type, which server items
+        // do not carry; and the synthetic folders are not real paths.
+        [ContextMenuAction.AddToFavorites]: (item) =>
+          !item.flags?.isInMyFavorites && isFavoritable(item),
       },
     );
   }
@@ -153,14 +195,12 @@ class RestServerAdapter implements ContentAdapter {
     await this.connect();
   }
 
-  // TODO #417 Implement favorites
-  public async addItemToFavorites(): Promise<boolean> {
-    throw new Error("Method not implemented.");
+  public async addItemToFavorites(item: ContentItem): Promise<boolean> {
+    return await addServerFavorite(await this.getPathOfItem(item));
   }
 
-  // TODO #417 Implement favorites
-  public async removeItemFromFavorites(): Promise<boolean> {
-    throw new Error("Method not implemented.");
+  public async removeItemFromFavorites(item: ContentItem): Promise<boolean> {
+    return await removeServerFavorite(await this.getPathOfItem(item));
   }
 
   public async createNewFolder(
@@ -235,6 +275,9 @@ class RestServerAdapter implements ContentAdapter {
         ifMatch: "",
       });
       delete this.fileMetadataMap[filePath];
+      // A deliberate delete is the one signal that tells a stale favorite
+      // apart from one we simply cannot reach right now.
+      await removeServerFavorite(this.pathOfUri(item.uri));
       return true;
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (error) {
@@ -269,6 +312,11 @@ class RestServerAdapter implements ContentAdapter {
       ];
     }
 
+    if (parentItem.id === SERVER_FAVORITES_FOLDER_ID) {
+      return await this.getFavoriteItems();
+    }
+
+    const favorites = new Set(await readServerFavorites());
     const allItems = [];
     const limit = 100;
     let start = 0;
@@ -303,10 +351,15 @@ class RestServerAdapter implements ContentAdapter {
       totalItemCount = response.data.count;
 
       allItems.push(
-        ...response.data.items.map((childItem: FileProperties, index) => ({
-          ...this.filePropertiesToContentItem(childItem),
-          uid: `${parentItem.uid}/${index + start}`,
-        })),
+        ...response.data.items.map((childItem: FileProperties, index) =>
+          this.markFavorite(
+            {
+              ...this.filePropertiesToContentItem(childItem),
+              uid: `${parentItem.uid}/${index + start}`,
+            },
+            favorites,
+          ),
+        ),
       );
 
       start += limit;
@@ -357,8 +410,74 @@ class RestServerAdapter implements ContentAdapter {
         ? this.getNavigationRoot().replace("/members", "")
         : item.uri;
 
-    const path = this.trimComputePrefix(uri);
-    return path.split(SAS_FILE_SEPARATOR).join("/").replace(/~sc~/g, ";");
+    return this.pathOfUri(uri);
+  }
+
+  // The session-independent path of an item, and its inverse. Favorites are
+  // stored in this form: a compute uri carries the session id, so it would go
+  // stale the moment the session it names is recycled.
+  private pathOfUri(uri: string): string {
+    return this.trimComputePrefix(uri)
+      .split(SAS_FILE_SEPARATOR)
+      .join("/")
+      .replace(/~sc~/g, ";");
+  }
+
+  private computePathOfPath(path: string): string {
+    return path.replace(/;/g, "~sc~").split("/").join(SAS_FILE_SEPARATOR);
+  }
+
+  // The item as it appears elsewhere in the tree, told that it is bookmarked
+  // so it offers "Remove from My Favorites" rather than "Add".
+  private markFavorite(item: ContentItem, favorites: Set<string>): ContentItem {
+    if (!favorites.has(this.pathOfUri(item.uri))) {
+      return item;
+    }
+
+    const favorited = {
+      ...item,
+      flags: { ...item.flags, isInMyFavorites: true },
+    };
+
+    return {
+      ...favorited,
+      contextValue: this.contextMenuProvider.availableActions(favorited),
+    };
+  }
+
+  private async getFavoriteItems(): Promise<ContentItem[]> {
+    const paths = await readServerFavorites();
+    const items = await Promise.all(
+      paths.map((path) => this.favoriteToContentItem(path)),
+    );
+
+    return sortedContentItems(
+      items.filter((item): item is ContentItem => item !== undefined),
+    );
+  }
+
+  private async favoriteToContentItem(
+    path: string,
+  ): Promise<ContentItem | undefined> {
+    try {
+      const response = await this.fileSystemApi.getFileorDirectoryProperties({
+        sessionId: this.sessionId,
+        fileOrDirectoryPath: this.computePathOfPath(path),
+      });
+
+      return {
+        ...this.filePropertiesToContentItem(response.data, {
+          isInMyFavorites: true,
+          isFavoriteEntry: true,
+        }),
+        uid: `${SERVER_FAVORITES_FOLDER_ID}/${path}`,
+      };
+    } catch {
+      // Moved, deleted, or outside the navigation root this session was given.
+      // Keep the path - a transient failure shouldn't throw away what the user
+      // saved - but don't render a node that cannot be opened.
+      return undefined;
+    }
   }
 
   public async getItemOfUri(uri: Uri): Promise<ContentItem> {
@@ -387,9 +506,8 @@ class RestServerAdapter implements ContentAdapter {
     return this.filePropertiesToContentItem(response.data);
   }
 
-  // TODO #417 Implement as part of favorites
-  public getRootFolder(): ContentItem | undefined {
-    return undefined;
+  public getRootFolder(name: string): ContentItem | undefined {
+    return this.rootFolders[name];
   }
 
   public async getRootItems(): Promise<RootFolderMap> {
@@ -397,10 +515,7 @@ class RestServerAdapter implements ContentAdapter {
 
     for (let index = 0; index < SAS_SERVER_ROOT_FOLDERS.length; ++index) {
       const delegateFolderName = SAS_SERVER_ROOT_FOLDERS[index];
-      const result =
-        delegateFolderName === "@sasServerRoot"
-          ? { data: SAS_SERVER_ROOT_FOLDER }
-          : { data: {} };
+      const result = { data: rootFolderFor(delegateFolderName) };
 
       this.rootFolders[delegateFolderName] = {
         ...result.data,
@@ -413,18 +528,9 @@ class RestServerAdapter implements ContentAdapter {
   }
 
   public async getUriOfItem(item: ContentItem): Promise<Uri> {
-    if (item.type !== "reference") {
-      return item.vscUri;
-    }
-
+    // Favorites are resolved to the real file as they are listed rather than
+    // stored as references, so there is nothing here to dereference.
     return item.vscUri;
-    // TODO #417 Implement favorites
-    // // If we're attempting to open a favorite, open the underlying file instead.
-    // try {
-    //   return (await this.getItemOfId(item.uri)).vscUri;
-    // } catch (error) {
-    //   return item.vscUri;
-    // }
   }
 
   public async moveItem(
@@ -532,9 +638,11 @@ class RestServerAdapter implements ContentAdapter {
     }));
 
     const id = getLink(links, "GET", "self").uri;
-    const isRootFolder = [SERVER_FOLDER_ID, SAS_SERVER_HOME_DIRECTORY].includes(
-      id,
-    );
+    const isRootFolder = [
+      SERVER_FOLDER_ID,
+      SAS_SERVER_HOME_DIRECTORY,
+      SERVER_FAVORITES_FOLDER_ID,
+    ].includes(id);
     const item = {
       id,
       uri: id,

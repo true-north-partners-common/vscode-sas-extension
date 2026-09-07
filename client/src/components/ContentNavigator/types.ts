@@ -20,6 +20,10 @@ export interface ContentItem {
   flags?: {
     isInRecycleBin?: boolean;
     isInMyFavorites?: boolean;
+    // Set on the entries listed _under_ a favorites folder, as opposed to the
+    // original item elsewhere in the tree. Both carry isInMyFavorites; only the
+    // shortcut carries this.
+    isFavoriteEntry?: boolean;
     favoriteUri?: string;
   };
   isReference?: boolean;

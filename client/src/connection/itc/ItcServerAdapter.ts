@@ -7,10 +7,17 @@ import { v4 } from "uuid";
 import { onRunError } from "../../commands/run";
 import {
   Messages,
+  SAS_SERVER_FAVORITES_FOLDER,
   SAS_SERVER_ROOT_FOLDER,
   SAS_SERVER_ROOT_FOLDERS,
+  SERVER_FAVORITES_FOLDER_ID,
   SERVER_FOLDER_ID,
 } from "../../components/ContentNavigator/const";
+import {
+  addServerFavorite,
+  readServerFavorites,
+  removeServerFavorite,
+} from "../../components/ContentNavigator/serverFavorites";
 import {
   ContentAdapter,
   ContentItem,
@@ -31,6 +38,12 @@ import { executeRawCode } from "./CodeRunner";
 import { PowershellResponse, ScriptActions } from "./types";
 import { getDirectorySeparator } from "./util";
 
+// The two folders we invent rather than read off the file system. Home is not
+// one of them here: unlike the rest connection, it is identified by its real
+// path, so it can be bookmarked like any other directory.
+const isSyntheticFolder = (item: ContentItem): boolean =>
+  [SERVER_FOLDER_ID, SERVER_FAVORITES_FOLDER_ID].includes(item.id);
+
 class ItcServerAdapter implements ContentAdapter {
   protected sessionId: string;
   private rootFolders: RootFolderMap;
@@ -48,25 +61,43 @@ class ItcServerAdapter implements ContentAdapter {
         ContextMenuAction.Update,
         ContextMenuAction.CopyPath,
         ContextMenuAction.AllowDownload,
+        ContextMenuAction.AddToFavorites,
+        ContextMenuAction.RemoveFromFavorites,
       ],
       {
-        [ContextMenuAction.CopyPath]: (item) => item.id !== SERVER_FOLDER_ID,
+        [ContextMenuAction.CopyPath]: (item) => !isSyntheticFolder(item),
+        // A favorite is a shortcut to a directory, not the directory itself.
+        // Renaming or deleting one would act on the original and leave the
+        // stored path dangling, so those stay on the item in the tree proper.
+        [ContextMenuAction.CreateChild]: (item) =>
+          item.permission.addMember && !item.flags?.isFavoriteEntry,
+        [ContextMenuAction.Delete]: (item) =>
+          item.permission.delete && !item.flags?.isFavoriteEntry,
+        [ContextMenuAction.Update]: (item) =>
+          item.permission.write && !item.flags?.isFavoriteEntry,
+        // The content pane keys this off the content type, which server items
+        // do not carry; and the synthetic folders are not real paths.
+        [ContextMenuAction.AddToFavorites]: (item) =>
+          !item.flags?.isInMyFavorites && !isSyntheticFolder(item),
       },
     );
   }
 
-  /* The following methods are needed for favorites, which are not applicable to sas server */
+  /* Only sas content favorites are stored server side, as folder members */
   public async addChildItem(): Promise<boolean> {
     throw new Error("Method not implemented");
   }
-  public async addItemToFavorites(): Promise<boolean> {
-    throw new Error("Method not implemented");
+
+  public async addItemToFavorites(item: ContentItem): Promise<boolean> {
+    return await addServerFavorite(await this.getPathOfItem(item));
   }
-  public removeItemFromFavorites(): Promise<boolean> {
-    throw new Error("Method not implemented");
+
+  public async removeItemFromFavorites(item: ContentItem): Promise<boolean> {
+    return await removeServerFavorite(await this.getPathOfItem(item));
   }
-  public getRootFolder(): ContentItem | undefined {
-    return undefined;
+
+  public getRootFolder(name: string): ContentItem | undefined {
+    return this.rootFolders[name];
   }
 
   /* The following is needed for creating a flow, which isn't supported on sas server */
@@ -145,6 +176,9 @@ class ItcServerAdapter implements ContentAdapter {
       const { success } = await this.execute(ScriptActions.DeleteFile, {
         filePath: item.uri,
       });
+      if (success) {
+        await removeServerFavorite(await this.getPathOfItem(item));
+      }
       return success;
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (error) {
@@ -195,7 +229,13 @@ class ItcServerAdapter implements ContentAdapter {
       );
       homeFolder.contextValue =
         this.contextMenuProvider.availableActions(homeFolder);
-      return [homeFolder];
+      return [
+        this.markFavorite(homeFolder, new Set(await readServerFavorites())),
+      ];
+    }
+
+    if (parentItem.id === SERVER_FAVORITES_FOLDER_ID) {
+      return await this.getFavoriteItems();
     }
 
     const { success, data: items } = await this.execute(
@@ -209,11 +249,73 @@ class ItcServerAdapter implements ContentAdapter {
       return [];
     }
 
-    const childItems = items.map(
-      this.convertPowershellResponseToContentItem.bind(this),
+    const favorites = new Set(await readServerFavorites());
+    const childItems = items.map((item) =>
+      this.markFavorite(
+        this.convertPowershellResponseToContentItem(item),
+        favorites,
+      ),
     );
 
     return sortedContentItems(childItems);
+  }
+
+  // The item as it appears elsewhere in the tree, told that it is bookmarked
+  // so it offers "Remove from My Favorites" rather than "Add".
+  private markFavorite(item: ContentItem, favorites: Set<string>): ContentItem {
+    if (!favorites.has(item.uri)) {
+      return item;
+    }
+
+    return this.withFavoriteFlags(item, { isInMyFavorites: true });
+  }
+
+  private withFavoriteFlags(
+    item: ContentItem,
+    flags: ContentItem["flags"],
+  ): ContentItem {
+    const favorited = { ...item, flags: { ...item.flags, ...flags } };
+
+    return {
+      ...favorited,
+      contextValue: this.contextMenuProvider.availableActions(favorited),
+    };
+  }
+
+  private async getFavoriteItems(): Promise<ContentItem[]> {
+    const paths = await readServerFavorites();
+    const items = await Promise.all(
+      paths.map((path) => this.favoriteToContentItem(path)),
+    );
+
+    return sortedContentItems(
+      items.filter((item): item is ContentItem => item !== undefined),
+    );
+  }
+
+  private async favoriteToContentItem(
+    path: string,
+  ): Promise<ContentItem | undefined> {
+    try {
+      const item = await this.getItemAtPath(path);
+      if (!item) {
+        return undefined;
+      }
+
+      return {
+        ...this.withFavoriteFlags(item, {
+          isInMyFavorites: true,
+          isFavoriteEntry: true,
+        }),
+        uid: `${SERVER_FAVORITES_FOLDER_ID}/${path}`,
+      };
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    } catch (error) {
+      // Moved, deleted, or outside the navigation root this connection was
+      // given. Keep the path - a transient failure shouldn't throw away what
+      // the user saved - but don't render a node that cannot be opened.
+      return undefined;
+    }
   }
 
   public async getPathOfItem(item: ContentItem): Promise<string> {
@@ -271,11 +373,16 @@ class ItcServerAdapter implements ContentAdapter {
       const delegateFolderName = SAS_SERVER_ROOT_FOLDERS[index];
       this.rootFolders[delegateFolderName] = {
         uid: `${index}`,
-        ...convertStaticFolderToContentItem(SAS_SERVER_ROOT_FOLDER, {
-          write: false,
-          delete: false,
-          addMember: false,
-        }),
+        ...convertStaticFolderToContentItem(
+          delegateFolderName === "@sasServerFavorites"
+            ? SAS_SERVER_FAVORITES_FOLDER
+            : SAS_SERVER_ROOT_FOLDER,
+          {
+            write: false,
+            delete: false,
+            addMember: false,
+          },
+        ),
       };
     }
 
