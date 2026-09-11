@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { ProgressLocation, l10n, window } from "vscode";
 
+import { appendSessionLogFn } from "../components/logViewer";
 import { syncWorkspace } from "../components/sync";
 import { getSession } from "../connection";
 import { profileConfig, switchProfile } from "./profile";
@@ -13,6 +14,9 @@ export const resyncWorkspace = async (): Promise<void> => {
   }
 
   const session = getSession();
+  // Without this the session's startup log, and anything else reported while
+  // connecting, is discarded when a resync is what opens the session.
+  session.onSessionLogFn = appendSessionLogFn;
   await session.setup();
 
   await window.withProgress(
