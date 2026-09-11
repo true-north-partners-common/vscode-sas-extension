@@ -83,6 +83,12 @@ export interface ViyaProfile
   clientSecret?: string;
   context?: string;
   serverId?: string;
+  /**
+   * Seconds a session may sit idle before the server ends it. Left unset, the
+   * compute context decides, which in practice means the server default of 15
+   * minutes - short enough that a session rarely survives a coffee break.
+   */
+  sessionInactiveTimeout?: number;
 }
 
 export interface SSHProfile extends BaseProfile {

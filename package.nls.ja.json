@@ -56,6 +56,7 @@
   "configuration.SAS.connectionProfiles.profiles.iom.username": "SAS IOM 接続ユーザー名",
   "configuration.SAS.connectionProfiles.profiles.name": "SAS 接続プロファイル名",
   "configuration.SAS.connectionProfiles.profiles.sasOptions": "SAS 接続 SAS オプション",
+  "configuration.SAS.connectionProfiles.profiles.sessionInactiveTimeout": "Seconds a SAS session may sit idle before the server ends it. Leave unset to let the compute context decide, which usually means 15 minutes. Set 0 so the session is never ended for being idle.",
   "configuration.SAS.connectionProfiles.profiles.ssh.host": "SAS SSH 接続 SSH ホスト",
   "configuration.SAS.connectionProfiles.profiles.ssh.port": "SAS SSH 接続ポート",
   "configuration.SAS.connectionProfiles.profiles.ssh.privateKeyFilePath": "SAS SSH 接続の秘密キーファイルパス",

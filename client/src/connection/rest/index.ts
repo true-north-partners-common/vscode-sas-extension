@@ -31,6 +31,7 @@ export interface Config extends BaseConfig {
   context?: string;
   serverId?: string;
   reconnect?: boolean;
+  sessionInactiveTimeout?: number;
 }
 
 class RestSession extends Session {
@@ -150,6 +151,16 @@ class RestSession extends Session {
           {
             contextId: context.id,
             sessionRequest: {
+              // Omitted unless the profile asks for it, so a deployment that
+              // has an opinion about session lifetime keeps it.
+              ...(this._config.sessionInactiveTimeout === undefined
+                ? {}
+                : {
+                    attributes: {
+                      sessionInactiveTimeout:
+                        this._config.sessionInactiveTimeout,
+                    },
+                  }),
               environment: {
                 options: [...formattedOpts],
                 autoExecLines: [...autoExecLines],
@@ -196,11 +207,11 @@ class RestSession extends Session {
         : await this.contextAttributes();
 
       this._onSessionLogFn(
-        sessionDiagnosticLines(
-          this._computeSession.sessionId,
-          context?.name,
-          attributes?.sessionInactiveTimeout,
-        ).map((line) => ({ line, type: LogLineTypeEnum.Note })),
+        sessionDiagnosticLines(this._computeSession.sessionId, {
+          contextName: context?.name,
+          contextTimeout: attributes?.sessionInactiveTimeout,
+          profileTimeout: this._config.sessionInactiveTimeout,
+        }).map((line) => ({ line, type: LogLineTypeEnum.Note })),
       );
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (error) {

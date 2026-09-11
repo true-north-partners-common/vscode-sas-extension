@@ -56,6 +56,7 @@
   "configuration.SAS.connectionProfiles.profiles.iom.username": "Nome de usuário para o conexão SAS IOM",
   "configuration.SAS.connectionProfiles.profiles.name": "Nome do Perfil de Conexão SAS",
   "configuration.SAS.connectionProfiles.profiles.sasOptions": "Opções SAS da conexão SAS",
+  "configuration.SAS.connectionProfiles.profiles.sessionInactiveTimeout": "Seconds a SAS session may sit idle before the server ends it. Leave unset to let the compute context decide, which usually means 15 minutes. Set 0 so the session is never ended for being idle.",
   "configuration.SAS.connectionProfiles.profiles.ssh.host": "Host SSH da Conexão SSH SAS",
   "configuration.SAS.connectionProfiles.profiles.ssh.port": "Porta da Conexão SSH SAS",
   "configuration.SAS.connectionProfiles.profiles.ssh.privateKeyFilePath": "Caminho ao arquivo da chave privada da conexão SSH do SAS",

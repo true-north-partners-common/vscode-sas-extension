@@ -283,6 +283,11 @@
                             "default": "SAS Job Execution compute context",
                             "description": "%configuration.SAS.connectionProfiles.profiles.context%"
                           },
+                          "sessionInactiveTimeout": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "%configuration.SAS.connectionProfiles.profiles.sessionInactiveTimeout%"
+                          },
                           "clientId": {
                             "type": "string",
                             "default": "",
