@@ -10,11 +10,17 @@ import {
 } from "../../components/ExtensionContext";
 import { updateStatusBarItem } from "../../components/StatusBarItem";
 import { Session, SessionContextAttributes } from "../session";
-import { Context, ContextsApi, SessionsApi } from "./api/compute";
+import {
+  Context,
+  ContextsApi,
+  LogLineTypeEnum,
+  SessionsApi,
+} from "./api/compute";
 import { ComputeState, getApiConfig } from "./common";
 import { ComputeJob } from "./job";
 import { ComputeServer } from "./server";
 import { ComputeSession } from "./session";
+import { sessionDiagnosticLines } from "./sessionDiagnostics";
 
 let sessionInstance: RestSession;
 
@@ -158,9 +164,48 @@ class RestSession extends Session {
 
     await this.printSessionLog(this._computeSession);
 
+    await this.logSessionDiagnostics();
+
     //Save the current sessionId
     setContextValue("SAS.sessionId", this._computeSession.sessionId);
     updateStatusBarItem(true);
+  };
+
+  /**
+   * Note the new session, and the idle timeout governing it, in the SAS log.
+   *
+   * Nothing else announces that a session was created, and a session quietly
+   * replaced between two runs is the usual reason work that was there a moment
+   * ago has gone: an idle session ends itself after sessionInactiveTimeout, and
+   * since we send no attributes of our own, whatever the compute context says
+   * is what applies.
+   */
+  private logSessionDiagnostics = async (): Promise<void> => {
+    if (!this._onSessionLogFn) {
+      return;
+    }
+
+    try {
+      // Both of these read the context cached while the session was created,
+      // so neither costs a request. A server-backed session has no context.
+      const context = this._config.serverId
+        ? undefined
+        : await this.getContext();
+      const attributes = this._config.serverId
+        ? undefined
+        : await this.contextAttributes();
+
+      this._onSessionLogFn(
+        sessionDiagnosticLines(
+          this._computeSession.sessionId,
+          context?.name,
+          attributes?.sessionInactiveTimeout,
+        ).map((line) => ({ line, type: LogLineTypeEnum.Note })),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    } catch (error) {
+      // A diagnostic is never worth failing a connection over.
+    }
   };
 
   protected _run = async (code: string, ...args) => {

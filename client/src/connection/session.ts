@@ -8,6 +8,10 @@ export type SessionContextAttributes =
   | {
       fileNavigationCustomRootPath: string | undefined;
       fileNavigationRoot: "CUSTOM" | "SYSTEM" | "USER" | undefined;
+      // Seconds a session may sit idle before it ends itself. Absent means the
+      // context does not set it and the server's own default applies, so this
+      // is deliberately optional rather than defaulted here.
+      sessionInactiveTimeout?: number;
     }
   | undefined;
 
