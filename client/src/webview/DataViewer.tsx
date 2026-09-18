@@ -3,51 +3,64 @@
 import { useCallback, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 
-import { AgGridReact } from "ag-grid-react";
-
 import ".";
 import ColumnMenu from "./ColumnMenu";
+import GridMenu, { MenuItem } from "./GridMenu";
 import TableFilter from "./TableFilter";
 import localize from "./localize";
 import useDataViewer from "./useDataViewer";
-import useTheme from "./useTheme";
 
 import "./DataViewer.css";
-import "ag-grid-community/styles/ag-grid.css";
-import "ag-grid-community/styles/ag-theme-alpine.css";
 
-const gridStyles = {
-  "--ag-borders": "none",
-  "--ag-row-border-width": "0px",
-  height: "calc(100% - 9.2rem)",
-  width: "100%",
-};
+const isMac = navigator.platform.toLowerCase().includes("mac");
+const modifierKey = isMac ? "⌘" : "Ctrl+";
 
 const DataViewer = () => {
   const title = document
     .querySelector("[data-title]")
     .getAttribute("data-title");
-  const theme = useTheme();
   const {
+    cellMenu,
     columnMenu,
     columns,
+    containerRef,
+    copySelection,
+    dismissCellMenu,
     dismissMenu,
     gridRef,
-    onGridReady,
+    noRows,
     refreshResults,
+    selectAll,
   } = useDataViewer();
 
   const handleKeydown = useCallback(
-    (event) => {
-      if (event.key === "Escape" && columnMenu) {
+    (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (columnMenu) {
         dismissMenu();
       }
+      if (cellMenu) {
+        dismissCellMenu();
+      }
     },
-    [columnMenu, dismissMenu],
+    [cellMenu, columnMenu, dismissCellMenu, dismissMenu],
   );
-  const dismissMenuWithoutFocus = useCallback(
-    () => dismissMenu(false),
-    [dismissMenu],
+  const dismissMenusWithoutFocus = useCallback(() => {
+    dismissMenu(false);
+    if (cellMenu) {
+      dismissCellMenu();
+    }
+  }, [cellMenu, dismissCellMenu, dismissMenu]);
+  const handleMouseDown = useCallback(
+    (event: MouseEvent) => {
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+      if (!(event.target as HTMLElement).closest(".grid-menu-popup")) {
+        dismissMenusWithoutFocus();
+      }
+    },
+    [dismissMenusWithoutFocus],
   );
 
   const panelMessageHandler = useCallback(
@@ -60,9 +73,10 @@ const DataViewer = () => {
         event.data.command === "panel:changeFocus" &&
         event.data.data.focused
       ) {
-        const cell = gridRef.current?.api.getFocusedCell();
+        const cell = gridRef.current?.getActiveCell();
         if (cell) {
-          gridRef.current?.api.setFocusedCell(cell.rowIndex, cell.column);
+          gridRef.current?.setActiveCell(cell.row, cell.cell);
+          gridRef.current?.focus();
         }
       }
     },
@@ -70,52 +84,77 @@ const DataViewer = () => {
   );
   useEffect(() => {
     document.addEventListener("keydown", handleKeydown);
-    window.addEventListener("blur", dismissMenuWithoutFocus);
+    document.addEventListener("mousedown", handleMouseDown);
+    window.addEventListener("blur", dismissMenusWithoutFocus);
     window.addEventListener("message", panelMessageHandler);
     return () => {
       document.removeEventListener("keydown", handleKeydown);
-      window.removeEventListener("blur", dismissMenuWithoutFocus);
+      document.removeEventListener("mousedown", handleMouseDown);
+      window.removeEventListener("blur", dismissMenusWithoutFocus);
       window.removeEventListener("message", panelMessageHandler);
     };
-  }, [handleKeydown, dismissMenuWithoutFocus, panelMessageHandler]);
+  }, [
+    handleKeydown,
+    handleMouseDown,
+    dismissMenusWithoutFocus,
+    panelMessageHandler,
+  ]);
 
-  if (columns.length === 0) {
-    return null;
-  }
+  const cellMenuItems: (MenuItem | string)[] = [
+    {
+      name: localize("Copy"),
+      shortcut: `${modifierKey}C`,
+      onPress: () => {
+        copySelection(false);
+        dismissCellMenu();
+      },
+    },
+    {
+      name: localize("Copy with headers"),
+      onPress: () => {
+        copySelection(true);
+        dismissCellMenu();
+      },
+    },
+    "separator",
+    {
+      name: localize("Select all"),
+      shortcut: `${modifierKey}A`,
+      onPress: () => {
+        selectAll();
+        dismissCellMenu();
+      },
+    },
+  ];
 
   return (
     <div className="data-viewer">
-      <h1>{title}</h1>
-      <TableFilter
-        onCommit={(value) => {
-          refreshResults({ filterValue: value });
-        }}
-        initialValue={""}
-      />
+      {columns.length > 0 && (
+        <>
+          <h1>{title}</h1>
+          <TableFilter
+            onCommit={(value) => {
+              refreshResults({ filterValue: value });
+            }}
+            initialValue={""}
+          />
+        </>
+      )}
       {columnMenu && <ColumnMenu {...columnMenu} />}
-      <div
-        className={`ag-grid-wrapper ${theme}`}
-        style={gridStyles}
-        onClick={() => columnMenu && dismissMenuWithoutFocus()}
-      >
-        <AgGridReact
-          ref={gridRef}
-          cacheBlockSize={100}
-          columnDefs={columns}
-          defaultColDef={{
-            sortable: true,
-          }}
-          maintainColumnOrder
-          infiniteInitialRowCount={100}
-          maxBlocksInCache={10}
-          onGridReady={onGridReady}
-          rowModelType="infinite"
-          theme="legacy"
-          noRowsOverlayComponent={() =>
-            localize("No data matches the current filters.")
-          }
-          suppressDragLeaveHidesColumns
+      {cellMenu && (
+        <GridMenu
+          menuItems={cellMenuItems}
+          top={cellMenu.top}
+          left={cellMenu.left}
         />
+      )}
+      <div className="grid-wrapper">
+        <div ref={containerRef} className="data-grid" />
+        {noRows && (
+          <div className="no-rows-overlay">
+            {localize("No data matches the current filters.")}
+          </div>
+        )}
       </div>
     </div>
   );

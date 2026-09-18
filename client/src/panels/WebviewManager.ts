@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import { Disposable, Uri, ViewColumn, WebviewPanel, window } from "vscode";
 
+import { v4 } from "uuid";
+
 export class WebViewManager {
   public panels: Record<string, WebView> = {};
 
@@ -50,12 +52,15 @@ export abstract class WebView {
   abstract scripts?(): string[];
   abstract styles?(): string[];
   public render(): WebView {
+    // Allows the webview to create <style> elements at runtime (e.g. the data
+    // grid's column width rules) without opening up 'unsafe-inline'.
+    const nonce = v4().replace(/-/g, "");
     const policies = [
       `default-src 'none';`,
       `font-src ${this.panel.webview.cspSource} data:;`,
       `img-src ${this.panel.webview.cspSource} data:;`,
       `script-src ${this.panel.webview.cspSource};`,
-      `style-src ${this.panel.webview.cspSource};`,
+      `style-src ${this.panel.webview.cspSource} 'nonce-${nonce}';`,
     ];
     const styles = (this?.styles() || [])
       .map(
@@ -87,7 +92,7 @@ export abstract class WebView {
           ${styles}
           <title>${this.title}</title>
         </head>
-        <body data-l10n='${JSON.stringify(this.l10nMessages ? this.l10nMessages() : {})}'>
+        <body data-nonce="${nonce}" data-l10n='${JSON.stringify(this.l10nMessages ? this.l10nMessages() : {})}'>
           ${this.body()}
           ${scripts}
         </body>

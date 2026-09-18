@@ -4,12 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const MENU_RIGHT_OFFSET = 30;
 
-interface MenuItem {
+export interface MenuItem {
   checked?: boolean;
   children?: (MenuItem | string)[];
   disabled?: boolean;
   name: string;
   onPress?: () => void;
+  shortcut?: string;
 }
 
 const GridMenu = ({
@@ -21,7 +22,6 @@ const GridMenu = ({
   menuItems,
   parentDimensions,
   subMenu: isSubMenu,
-  theme,
   top,
 }: {
   dismissMenu?: () => void;
@@ -30,7 +30,6 @@ const GridMenu = ({
   menuItems: (MenuItem | string)[];
   parentDimensions?: { left: number; width: number };
   subMenu?: boolean;
-  theme: string;
   top: number;
 }) => {
   const menuRef = useRef<HTMLDivElement>(undefined);
@@ -38,9 +37,7 @@ const GridMenu = ({
   const [subMenu, setSubMenu] = useState<
     { items: (MenuItem | string)[]; index: number } | undefined
   >(undefined);
-  const className = isSubMenu
-    ? `ag-menu ag-ltr ag-popup-child ${theme}`
-    : `ag-menu ag-column-menu ag-ltr ag-popup-child ag-popup-positioned-under ${theme}`;
+  const className = isSubMenu ? "grid-menu grid-sub-menu" : "grid-menu";
 
   // The following useEffect positions our column header menu. There are three general
   // ways of laying things out.
@@ -175,12 +172,11 @@ const GridMenu = ({
           menuItems={subMenu.items}
           parentDimensions={{ left, width }}
           subMenu
-          theme={theme}
           top={top}
         />
       )}
       <div
-        className="ag-theme-sas ag-popup"
+        className="grid-menu-popup"
         // We rely on the menu being displayed/having width _first_ before being able to
         // calculate it's correct left position. This prevents actually showing the
         // menu to the user until we've figured that out. This prevents flashes of the
@@ -193,11 +189,7 @@ const GridMenu = ({
           style={{ top, left }}
           ref={menuRef}
         >
-          <div className="ag-menu-list ag-focus-managed" role="menu">
-            <div
-              className="ag-tab-guard ag-tab-guard-top"
-              role="presentation"
-            ></div>
+          <div className="grid-menu-list" role="menu">
             {menuItems.map((menuItem, index) => {
               if (typeof menuItem === "string") {
                 return <Separator key={index} />;
@@ -206,7 +198,7 @@ const GridMenu = ({
                 <div
                   aria-expanded="false"
                   data-index={index}
-                  className={`ag-menu-option ${index === activeIndex ? "ag-menu-option-active" : ""} ${menuItem.disabled ? "ag-menu-option-disabled" : ""}`}
+                  className={`grid-menu-option ${index === activeIndex ? "active" : ""} ${menuItem.disabled ? "disabled" : ""}`}
                   role="menuitem"
                   aria-haspopup="menu"
                   key={menuItem.name}
@@ -228,7 +220,7 @@ const GridMenu = ({
                     }
                     setActiveIndex(-1);
                     const targetInPopup = Array.from(
-                      document.querySelectorAll(".ag-popup"),
+                      document.querySelectorAll(".grid-menu-popup"),
                       // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
                     ).some((t) => t.contains(e.target as HTMLElement));
                     if (!targetInPopup) {
@@ -237,38 +229,25 @@ const GridMenu = ({
                   }}
                 >
                   <span
-                    className="ag-menu-option-part ag-menu-option-icon"
+                    className={`grid-menu-option-icon ${menuItem.checked ? "checked" : ""}`}
                     role="presentation"
-                  >
-                    {menuItem.checked && (
-                      <span
-                        className="ag-icon ag-icon-tick"
-                        role="presentation"
-                      />
-                    )}
-                  </span>
+                  />
                   <span
-                    className="ag-menu-option-part ag-menu-option-text"
+                    className="grid-menu-option-text"
                     onClick={() => handleClickMenuItem(index, menuItem)}
                   >
                     {menuItem.name}
                   </span>
-                  <span className="ag-menu-option-part ag-menu-option-shortcut"></span>
-                  <span className="ag-menu-option-part ag-menu-option-popup-pointer">
-                    {menuItem.children && menuItem.children.length > 0 && (
-                      <span
-                        className="ag-icon ag-icon-small-right"
-                        role="presentation"
-                      />
-                    )}
+                  <span className="grid-menu-option-shortcut">
+                    {menuItem.shortcut}
                   </span>
+                  <span
+                    className={`grid-menu-option-pointer ${menuItem.children?.length ? "has-children" : ""}`}
+                    role="presentation"
+                  />
                 </div>
               );
             })}
-            <div
-              className="ag-tab-guard ag-tab-guard-bottom"
-              role="presentation"
-            />
           </div>
         </div>
       </div>
@@ -277,13 +256,7 @@ const GridMenu = ({
 };
 
 const Separator = () => (
-  <div className="ag-menu-separator" aria-hidden="true">
-    {" "}
-    <div className="ag-menu-separator-part"></div>{" "}
-    <div className="ag-menu-separator-part"></div>{" "}
-    <div className="ag-menu-separator-part"></div>{" "}
-    <div className="ag-menu-separator-part"></div>{" "}
-  </div>
+  <div className="grid-menu-separator" aria-hidden="true" />
 );
 
 export default GridMenu;

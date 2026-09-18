@@ -1,11 +1,6 @@
 // Copyright © 2025, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import { useRef } from "react";
-
-import { AgColumn, GridApi } from "ag-grid-community";
-
 import localize from "./localize";
-import useTheme from "./useTheme";
 
 const getIconForColumnType = (type: string) => {
   switch (type.toLocaleLowerCase()) {
@@ -45,68 +40,44 @@ const getTermForColumnType = (type: string) => {
   }
 };
 
-const ColumnHeader = ({
-  api,
-  column,
-  currentColumn: getCurrentColumn,
-  columnType,
-  displayMenuForColumn,
-}: {
-  api: GridApi;
-  column: AgColumn;
-  currentColumn: () => AgColumn | undefined;
-  columnType: string;
-  displayMenuForColumn: (api: GridApi, column: AgColumn, rect: DOMRect) => void;
-}) => {
-  const theme = useTheme();
-  const ref = useRef<HTMLButtonElement>(undefined!);
-  const currentColumn = getCurrentColumn();
-  const currentSortedColumns = api.getColumnState().filter((c) => c.sort);
-  const sort = column.getSort();
-  const columnNumber =
-    sort && currentSortedColumns.length > 1 ? `${column.sortIndex + 1}` : "";
-  const dropdownClassname =
-    currentColumn?.colId === column.colId ? "active dropdown" : "dropdown";
-  const sortTitle =
-    sort === "asc"
-      ? localize("Sorted, Ascending")
-      : localize("Sorted, Descending");
+/**
+ * Adds the column type icon and the column menu button to a grid header cell.
+ * The grid renders the column name and sort indicators itself.
+ */
+export const renderColumnHeader = (
+  node: HTMLElement,
+  columnId: string,
+  {
+    columnType,
+    isMenuOpen,
+    displayMenuForColumn,
+  }: {
+    columnType: string;
+    isMenuOpen: boolean;
+    displayMenuForColumn: (columnId: string, rect: DOMRect) => void;
+  },
+) => {
+  const icon = document.createElement("span");
+  icon.className = `header-icon ${getIconForColumnType(columnType)}`;
+  icon.title = getTermForColumnType(columnType);
+  node.prepend(icon);
 
-  const displayColumnMenu = () =>
-    displayMenuForColumn(api, column, ref.current.getBoundingClientRect());
-
-  return (
-    <div className={`ag-cell-label-container ${theme}`} role="presentation">
-      <div className="ag-header-cell-label" role="presentation">
-        <span
-          className={`header-icon ${getIconForColumnType(columnType)}`}
-          title={getTermForColumnType(columnType)}
-        />
-        <span className="ag-header-cell-text" title={column.colId}>
-          {column.colId}
-        </span>
-        <span className="sort-icon-wrapper">
-          {!!sort && (
-            <>
-              <span className={`icon ${sort}`} title={sortTitle}></span>
-              {!!columnNumber && <span className="number">{columnNumber}</span>}
-            </>
-          )}
-        </span>
-        <div className={dropdownClassname}>
-          <button
-            ref={ref}
-            type="button"
-            onClick={displayColumnMenu}
-            tabIndex={-1}
-            title={localize("Options")}
-          >
-            <span />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+  const dropdown = document.createElement("div");
+  dropdown.className = isMenuOpen ? "active dropdown" : "dropdown";
+  dropdown.dataset.columnId = columnId;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.tabIndex = -1;
+  button.title = localize("Options");
+  button.append(document.createElement("span"));
+  // Keep clicks on the button from sorting or dragging the column
+  for (const type of ["mousedown", "pointerdown"]) {
+    button.addEventListener(type, (event) => event.stopPropagation());
+  }
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    displayMenuForColumn(columnId, button.getBoundingClientRect());
+  });
+  dropdown.append(button);
+  node.append(dropdown);
 };
-
-export default ColumnHeader;

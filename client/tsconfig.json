@@ -7,6 +7,7 @@
     "module": "commonjs",
     "outDir": "out",
     "rootDir": ".",
+    "skipLibCheck": true,
     "sourceMap": true,
     "target": "es2019"
   },

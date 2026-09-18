@@ -1,11 +1,13 @@
 // Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import { Uri, l10n, window } from "vscode";
-
-import type { SortModelItem } from "ag-grid-community";
+import { Uri, env, l10n, window } from "vscode";
 
 import PaginatedResultSet from "../components/LibraryNavigator/PaginatedResultSet";
-import { TableData, TableQuery } from "../components/LibraryNavigator/types";
+import {
+  SortModelItem,
+  TableData,
+  TableQuery,
+} from "../components/LibraryNavigator/types";
 import { Column } from "../connection/rest/api/compute";
 import { WebView } from "./WebviewManager";
 
@@ -26,6 +28,7 @@ class DataViewer extends WebView {
   public l10nMessages() {
     return {
       "Ascending (add to sorting)": l10n.t("Ascending (add to sorting)"),
+      "Copy with headers": l10n.t("Copy with headers"),
       "Descending (add to sorting)": l10n.t("Descending (add to sorting)"),
       "Enter expression": l10n.t("Enter expression"),
       "No data matches the current filters.": l10n.t(
@@ -33,7 +36,6 @@ class DataViewer extends WebView {
       ),
       "Not pinned": l10n.t("Not pinned"),
       "Pinned to the left": l10n.t("Pinned to the left"),
-      "Pinned to the right": l10n.t("Pinned to the right"),
       "Remove all sorting": l10n.t("Remove all sorting"),
       "Remove sorting": l10n.t("Remove sorting"),
       "Row number": l10n.t("Row number"),
@@ -42,6 +44,7 @@ class DataViewer extends WebView {
       Ascending: l10n.t("Ascending"),
       Character: l10n.t("Character"),
       Clear: l10n.t("Clear"),
+      Copy: l10n.t("Copy"),
       Currency: l10n.t("Currency"),
       Date: l10n.t("Date"),
       Datetime: l10n.t("Datetime"),
@@ -51,6 +54,7 @@ class DataViewer extends WebView {
       Pin: l10n.t("Pin"),
       Properties: l10n.t("Properties"),
       Search: l10n.t("Search"),
+      "Select all": l10n.t("Select all"),
       Sort: l10n.t("Sort"),
     };
   }
@@ -83,6 +87,8 @@ class DataViewer extends WebView {
         sortModel?: SortModelItem[];
         columnName?: string;
         query: TableQuery | undefined;
+        text?: string;
+        truncatedAt?: number;
       };
     },
   ): Promise<void> {
@@ -116,6 +122,17 @@ class DataViewer extends WebView {
       case "request:loadColumnProperties":
         if (event.data.columnName) {
           this.loadColumnProperties(event.data.columnName);
+        }
+        break;
+      case "request:copyToClipboard":
+        await env.clipboard.writeText(event.data.text ?? "");
+        if (event.data.truncatedAt) {
+          window.showWarningMessage(
+            l10n.t(
+              "Only the first {count} selected rows were copied. Use Download to export the full table.",
+              { count: event.data.truncatedAt },
+            ),
+          );
         }
         break;
       default:

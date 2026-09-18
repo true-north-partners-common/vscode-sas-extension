@@ -84,24 +84,201 @@ body,
     no-repeat;
 }
 
-.ag-cell-label-container button {
+/* GRID */
+
+.data-viewer {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.grid-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.data-grid {
+  height: 100%;
+  width: 100%;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  outline: 0;
+}
+
+.data-grid .slick-pane {
+  position: absolute;
+  outline: 0;
+  overflow: hidden;
+  width: 100%;
+}
+
+.data-grid .slick-header,
+.data-grid .slick-viewport {
+  position: relative;
+  width: 100%;
+  margin: 0;
+  outline: 0;
+  border: 0;
+}
+
+.data-grid .slick-header {
+  overflow: hidden;
+  background: var(--vscode-editorGroupHeader-tabsBackground);
+  border-bottom: 1px solid var(--vscode-editorGroup-border);
+}
+
+.data-grid .slick-header-columns {
+  position: relative;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.data-grid .slick-header-column {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  float: left;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 0.5rem;
+  overflow: hidden;
+  white-space: nowrap;
+  font-weight: 600;
+  border-right: 1px solid var(--vscode-editorGroup-border);
+  cursor: default;
+}
+
+.data-grid .slick-header-column:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.data-grid .slick-header-column:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.data-grid .slick-header-sortable {
+  cursor: pointer;
+}
+
+.data-grid .slick-column-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.data-grid .slick-resizable-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 4;
+}
+
+.data-grid .slick-viewport {
+  overflow: auto;
+}
+
+.data-grid .grid-canvas {
+  position: relative;
+  outline: 0;
+}
+
+.data-grid .slick-row {
+  position: absolute;
+  width: 100%;
+  border-bottom: 1px solid var(--vscode-editorGroup-border);
+  box-sizing: border-box;
+}
+
+.data-grid .slick-row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.data-grid .slick-cell {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  padding: 0 0.5rem;
+  line-height: 27px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  z-index: 1;
+  cursor: cell;
+  user-select: none;
+  border: 1px solid transparent;
+}
+
+.data-grid .slick-cell.row-number-cell {
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-editorGroupHeader-tabsBackground);
+  cursor: default;
+}
+
+.data-grid .slick-cell.selected {
+  background: var(--vscode-list-inactiveSelectionBackground);
+  color: var(--vscode-list-inactiveSelectionForeground, inherit);
+}
+
+.grid-wrapper:focus-within .slick-cell.selected {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.data-grid .slick-cell.active {
+  border-color: var(--vscode-focusBorder);
+}
+
+/* Cells being copied are marked briefly by the grid */
+.data-grid .slick-cell.copied {
+  background: var(--vscode-editor-selectionHighlightBackground);
+}
+
+.data-grid .slick-reorder-proxy {
+  opacity: 0.6;
+  cursor: move;
+}
+
+.data-grid .slick-sort-indicator-numbered {
+  font-size: 0.8em;
+  font-weight: normal;
+  margin-left: 2px;
+}
+
+.no-rows-overlay {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: var(--vscode-descriptionForeground);
+  pointer-events: none;
+}
+
+/* COLUMN HEADER */
+
+.slick-header-column button {
   background: none;
   border: none;
   margin: 0;
   padding: 0;
 }
 
-.ag-cell-label-container {
-  position: relative;
-}
-
-.ag-cell-label-container .dropdown {
+.slick-header-column .dropdown {
   display: none;
   margin-left: 0.25rem;
 }
 
 button,
-.ag-menu-option:not(.ag-menu-option-disabled) {
+.grid-menu-option:not(.disabled) {
   cursor: pointer;
 }
 
@@ -121,41 +298,118 @@ button,
   background-size: 16px 16px;
 }
 
-.ag-header-active .ag-cell-label-container .dropdown,
-.ag-cell-label-container .dropdown.active {
+.slick-header-column:hover .dropdown,
+.slick-header-column:focus .dropdown,
+.slick-header-column .dropdown.active {
   display: flex;
 }
 
-.sort-icon-wrapper {
-  margin-left: auto;
-}
-
-.sort-icon-wrapper .icon,
-.sort-icon-wrapper .number {
+.slick-sort-indicator {
   width: 16px;
   height: 16px;
-  display: inline-block;
-  vertical-align: middle;
+  flex-shrink: 0;
+  margin-left: 0.25rem;
 }
 
-.sort-icon-wrapper .icon.asc {
+.slick-sort-indicator-asc {
   background: url(../../../icons/light/arrow-up.svg);
   background-size: 16px 16px;
 }
 
-.vscode-dark .sort-icon-wrapper .icon.asc {
+.vscode-dark .slick-sort-indicator-asc {
   background: url(../../../icons/dark/arrow-up.svg);
   background-size: 16px 16px;
 }
 
-.sort-icon-wrapper .icon.desc {
+.slick-sort-indicator-desc {
   background: url(../../../icons/light/arrow-down.svg);
   background-size: 16px 16px;
 }
 
-.vscode-dark .sort-icon-wrapper .icon.desc {
+.vscode-dark .slick-sort-indicator-desc {
   background: url(../../../icons/dark/arrow-down.svg);
   background-size: 16px 16px;
+}
+
+/* MENUS */
+
+.grid-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 180px;
+  padding: 4px 0;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-menu-foreground);
+  background: var(--vscode-menu-background);
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+}
+
+.grid-menu-option {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 0.5rem;
+  outline: 0;
+  white-space: nowrap;
+}
+
+.grid-menu-option.active,
+.grid-menu-option:focus {
+  color: var(--vscode-menu-selectionForeground);
+  background: var(--vscode-menu-selectionBackground);
+}
+
+.grid-menu-option.disabled {
+  opacity: 0.5;
+}
+
+.grid-menu-option-icon,
+.grid-menu-option-pointer {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.grid-menu-option-text {
+  flex: 1;
+  padding: 0 0.5rem;
+}
+
+.grid-menu-option-shortcut {
+  padding-left: 1.5rem;
+  opacity: 0.7;
+}
+
+.grid-menu-option-icon.checked {
+  background: url(../../../icons/light/check.svg) center no-repeat;
+  background-size: 16px 16px;
+}
+
+.vscode-dark .grid-menu-option-icon.checked {
+  background: url(../../../icons/dark/check.svg) center no-repeat;
+  background-size: 16px 16px;
+}
+
+.grid-menu-option-pointer.has-children {
+  background: url(../../../icons/light/chevron-right.svg) center no-repeat;
+  background-size: 16px 16px;
+}
+
+.vscode-dark .grid-menu-option-pointer.has-children {
+  background: url(../../../icons/dark/chevron-right.svg) center no-repeat;
+  background-size: 16px 16px;
+}
+
+.grid-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(
+    --vscode-menu-separatorBackground,
+    var(--vscode-widget-border)
+  );
 }
 
 .filter-wrapper .filter-input {
