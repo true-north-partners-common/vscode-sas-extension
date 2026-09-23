@@ -101,7 +101,16 @@ class RestSession extends Session {
     if (this._computeSession && this._computeSession.sessionId) {
       const state = await this._computeSession
         .getState()
-        .catch(() => (this._computeSession = undefined));
+        .catch(async (error) => {
+          // A 404 or 410 means the session is already gone. Any other failure
+          // (network, 5xx) may leave it running, so delete it rather than
+          // leaving it, and whatever it has open, until its idle timeout.
+          const status = error?.response?.status;
+          if (status !== 404 && status !== 410) {
+            await this._computeSession.delete().catch(() => undefined);
+          }
+          this._computeSession = undefined;
+        });
       if (state === ComputeState.Error) {
         await this._computeSession.cancel();
       } else if (this._computeSession !== undefined) {
