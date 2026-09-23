@@ -31,6 +31,7 @@ const DataViewer = () => {
     noRows,
     refreshResults,
     selectAll,
+    setColumns,
   } = useDataViewer();
 
   const handleKeydown = useCallback(
@@ -67,6 +68,8 @@ const DataViewer = () => {
     (event: MessageEvent) => {
       if (event.data.command === "panel:refreshData") {
         refreshResults(undefined);
+        // Reload the column definitions too: a rerun may have changed them
+        setColumns([]);
       }
 
       if (
@@ -80,7 +83,7 @@ const DataViewer = () => {
         }
       }
     },
-    [gridRef, refreshResults],
+    [gridRef, refreshResults, setColumns],
   );
   useEffect(() => {
     document.addEventListener("keydown", handleKeydown);

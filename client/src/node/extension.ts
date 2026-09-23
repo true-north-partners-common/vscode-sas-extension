@@ -246,6 +246,7 @@ function updateViewSettings(): void {
     librariesDisplayed: false,
     serverEnabled: false,
     serverDisplayed: false,
+    allowDownload: true,
   };
   if (activeProfile) {
     settings.librariesEnabled =

@@ -136,9 +136,16 @@ export interface BaseProfile {
   autoExec?: AutoExec[];
 }
 
+interface GlobalShortcuts {
+  // key -> what you would like to name the shortcut
+  // value -> the folder uri
+  [key: string]: string;
+}
+
 export interface ProfileWithFileRootOptions {
   fileNavigationCustomRootPath?: string;
   fileNavigationRoot?: "CUSTOM" | "SYSTEM" | "USER";
+  globalShortcuts?: GlobalShortcuts;
 }
 
 export interface ProfileSyncOptions {

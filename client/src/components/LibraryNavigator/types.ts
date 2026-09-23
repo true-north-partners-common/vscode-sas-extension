@@ -1,6 +1,19 @@
 // Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import { ColumnCollection, TableInfo } from "../../connection/rest/api/compute";
+import { Column, TableInfo } from "../../connection/rest/api/compute";
+
+/**
+ * table column enriched with the SAS format category (date, datetime, time, curr, num,
+ * char, ...) reported by the connected SAS instance. Empty when it could not be determined.
+ */
+export interface TableColumn extends Column {
+  formatCategory?: string;
+}
+
+export interface TableColumnCollection {
+  count?: number;
+  items: TableColumn[];
+}
 
 export interface SortModelItem {
   colId: string;
@@ -40,7 +53,7 @@ export interface LibraryAdapter {
     item: LibraryItem,
     start: number,
     limit: number,
-  ): Promise<ColumnCollection>;
+  ): Promise<TableColumnCollection>;
   getLibraries(
     start: number,
     limit: number,

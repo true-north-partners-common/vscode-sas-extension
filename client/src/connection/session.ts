@@ -6,6 +6,7 @@ import type { OnLogFn, RunResult } from ".";
 
 export type SessionContextAttributes =
   | {
+      allowDownload: string | undefined;
       fileNavigationCustomRootPath: string | undefined;
       fileNavigationRoot: "CUSTOM" | "SYSTEM" | "USER" | undefined;
       // Seconds a session may sit idle before it ends itself. Absent means the

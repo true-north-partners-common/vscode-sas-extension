@@ -13,10 +13,10 @@ import { v4 } from "uuid";
 
 import type {
   SortModelItem,
+  TableColumn,
   TableData,
   TableQuery,
 } from "../components/LibraryNavigator/types";
-import { Column } from "../connection/rest/api/compute";
 import { renderColumnHeader } from "./ColumnHeader";
 import { ColumnMenuProps, GridController, getColumnMenu } from "./ColumnMenu";
 import RemoteDataModel, { Row } from "./RemoteDataModel";
@@ -72,11 +72,11 @@ const useDataViewer = () => {
   const modelRef = useRef<RemoteDataModel | undefined>(undefined);
   const queryRef = useRef<TableQuery | undefined>(undefined);
   const sortModelRef = useRef<SortModelItem[]>([]);
-  const columnTypesRef = useRef<Record<string, string>>({});
+  const columnDetailsRef = useRef<Record<string, TableColumn>>({});
   // Columns pinned by the user. The row number column is always pinned too.
   const pinnedCountRef = useRef(0);
 
-  const [columns, setColumns] = useState<Column[]>([]);
+  const [columns, setColumns] = useState<TableColumn[]>([]);
   const [columnMenu, setColumnMenu] = useState<ColumnMenuProps | undefined>();
   const [cellMenu, setCellMenu] = useState<CellMenuState | undefined>();
   const [noRows, setNoRows] = useState(false);
@@ -321,17 +321,21 @@ const useDataViewer = () => {
     gridRef.current?.focus();
   }, []);
 
-  // Load the column definitions once
+  // Load the column definitions. Clearing them (on refresh) loads them again,
+  // so a table whose columns changed is redrawn with the new ones.
   useEffect(() => {
-    request<{ columns: Column[] }>("loadColumns").then(
+    if (columns.length > 0) {
+      return;
+    }
+    request<{ columns: TableColumn[] }>("loadColumns").then(
       ({ columns: columnsData }) => {
-        columnTypesRef.current = Object.fromEntries(
-          columnsData.map((column) => [column.name, column.type]),
+        columnDetailsRef.current = Object.fromEntries(
+          columnsData.map((column) => [column.name, column]),
         );
         setColumns(columnsData);
       },
     );
-  }, []);
+  }, [columns.length]);
 
   // Create the grid once the columns have loaded
   useEffect(() => {
@@ -419,8 +423,10 @@ const useDataViewer = () => {
       if (column.id === ROW_NUMBER_COLUMN) {
         return;
       }
+      const details = columnDetailsRef.current[column.id];
       renderColumnHeader(node, String(column.id), {
-        columnType: columnTypesRef.current[column.id] ?? "",
+        columnType: details?.type ?? "",
+        columnFormatCategory: details?.formatCategory,
         isMenuOpen: columnMenuRef.current?.columnId === column.id,
         displayMenuForColumn,
       });
@@ -563,6 +569,7 @@ const useDataViewer = () => {
     cellMenu,
     columnMenu,
     columns,
+    setColumns,
     containerRef,
     copySelection,
     dismissCellMenu,
