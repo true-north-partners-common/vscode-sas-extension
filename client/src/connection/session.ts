@@ -93,5 +93,8 @@ export abstract class Session {
 
   abstract sessionId?(): string | undefined;
 
+  /** Whether the session should outlive VS Code, to be reconnected to later. */
+  keepAliveOnExit?(): boolean;
+
   contextAttributes?(): Promise<SessionContextAttributes>;
 }

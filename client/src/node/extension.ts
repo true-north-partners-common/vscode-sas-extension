@@ -22,7 +22,7 @@ import {
 import * as path from "path";
 
 import { checkProfileAndAuthorize } from "../commands/authorize";
-import { closeSession } from "../commands/closeSession";
+import { closeSession, closeSessionOnExit } from "../commands/closeSession";
 import { newSASFile, newSASNotebook } from "../commands/new";
 import {
   addProfile,
@@ -292,9 +292,6 @@ function triggerProfileUpdate(): void {
   }
 }
 
-export function deactivate(): Thenable<void> | undefined {
-  if (!client) {
-    return undefined;
-  }
-  return client.stop();
+export async function deactivate(): Promise<void> {
+  await Promise.all([client?.stop(), closeSessionOnExit()]);
 }

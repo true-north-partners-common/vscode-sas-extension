@@ -277,14 +277,19 @@ class RestSession extends Session {
   protected _close = async () => {
     this._cachedContext = undefined;
     if (this.sessionId()) {
-      this._computeSession.delete();
+      const computeSession = this._computeSession;
       this._computeSession = undefined;
+      // Wait for the delete so callers (e.g. shutdown) know it was sent.
+      // A failure leaves the session to its idle timeout.
+      await computeSession.delete().catch(() => undefined);
 
       //Since the session is being closed, remove the cached session id
       setContextValue("SAS.sessionId", undefined);
       updateStatusBarItem(false);
     }
   };
+
+  public keepAliveOnExit = (): boolean => !!this._config.reconnect;
 
   public sessionId = (): string => {
     return this._computeSession && this._computeSession.sessionId;
