@@ -76,10 +76,10 @@ const DataViewer = () => {
         event.data.command === "panel:changeFocus" &&
         event.data.data.focused
       ) {
-        const cell = gridRef.current?.getActiveCell();
-        if (cell) {
-          gridRef.current?.setActiveCell(cell.row, cell.cell);
-          gridRef.current?.focus();
+        // Give keyboard focus back to the grid without scrolling: the active
+        // cell may have been scrolled out of view before switching tabs.
+        if (gridRef.current?.getActiveCell()) {
+          gridRef.current.focus("internal");
         }
       }
     },
