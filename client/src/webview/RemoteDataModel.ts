@@ -14,6 +14,16 @@ export type FetchRows = (start: number, end: number) => Promise<RowBlock>;
 
 export const BLOCK_SIZE = 100;
 const MAX_CACHED_BLOCKS = 10;
+// Each request reads the table in the user's SAS session, so scrolling fast
+// shouldn't fire a burst of them (AG Grid also allowed 2 at a time).
+const MAX_CONCURRENT_REQUESTS = 2;
+
+interface QueuedBlock {
+  block: number;
+  generation: number;
+  resolve: () => void;
+  reject: (reason: unknown) => void;
+}
 
 // Returned for rows that haven't loaded yet, so the grid renders empty cells
 // instead of failing on a missing item.
@@ -33,6 +43,10 @@ export default class RemoteDataModel implements CustomDataView<Row> {
   private lengthIsFinal = false;
   // Bumped on reset, so responses for a previous sort/filter are dropped.
   private generation = 0;
+  private queue: QueuedBlock[] = [];
+  private activeRequests = 0;
+  // The blocks the grid last asked for; queued blocks outside it are skipped.
+  private wanted = { first: 0, last: 0 };
 
   constructor(
     private readonly fetchRows: FetchRows,
@@ -61,6 +75,8 @@ export default class RemoteDataModel implements CustomDataView<Row> {
     this.generation++;
     this.blocks.clear();
     this.pending.clear();
+    // Queued blocks belong to the old sort/filter; settle them unfetched
+    this.queue.splice(0).forEach(({ resolve }) => resolve());
     this.length = BLOCK_SIZE;
     this.lengthIsFinal = false;
   }
@@ -77,6 +93,7 @@ export default class RemoteDataModel implements CustomDataView<Row> {
     }
     const first = Math.floor(Math.max(fromRow, 0) / BLOCK_SIZE);
     const last = Math.floor(lastRow / BLOCK_SIZE);
+    this.wanted = { first, last };
     const loads: Promise<void>[] = [];
     for (let block = first; block <= last; block++) {
       loads.push(this.loadBlock(block));
@@ -118,24 +135,59 @@ export default class RemoteDataModel implements CustomDataView<Row> {
     }
 
     const generation = this.generation;
-    const start = block * BLOCK_SIZE;
-    const load = this.fetchRows(start, start + BLOCK_SIZE)
-      .then(({ rows, count }) => {
-        if (generation !== this.generation) {
-          return;
-        }
-        this.blocks.set(block, rows);
-        this.evictBlocks(block);
-        const lengthChanged = this.updateLength(start, rows.length, count);
-        this.onBlockLoaded(start, start + rows.length - 1, lengthChanged);
-      })
-      .finally(() => {
+    const load = new Promise<void>((resolve, reject) =>
+      this.queue.push({ block, generation, resolve, reject }),
+    );
+    this.pending.set(block, load);
+    this.startQueuedRequests();
+    return load;
+  }
+
+  private startQueuedRequests() {
+    while (
+      this.activeRequests < MAX_CONCURRENT_REQUESTS &&
+      this.queue.length > 0
+    ) {
+      const { block, generation, resolve, reject } = this.queue.shift();
+      const stale =
+        generation !== this.generation ||
+        block < this.wanted.first ||
+        block > this.wanted.last;
+      if (stale) {
+        // Scrolled past before its turn; scrolling back asks for it again
         if (generation === this.generation) {
           this.pending.delete(block);
         }
-      });
-    this.pending.set(block, load);
-    return load;
+        resolve();
+        continue;
+      }
+
+      this.activeRequests++;
+      this.fetchBlock(block, generation)
+        .then(resolve, reject)
+        .finally(() => {
+          this.activeRequests--;
+          this.startQueuedRequests();
+        });
+    }
+  }
+
+  private async fetchBlock(block: number, generation: number): Promise<void> {
+    const start = block * BLOCK_SIZE;
+    try {
+      const { rows, count } = await this.fetchRows(start, start + BLOCK_SIZE);
+      if (generation !== this.generation) {
+        return;
+      }
+      this.blocks.set(block, rows);
+      this.evictBlocks(block);
+      const lengthChanged = this.updateLength(start, rows.length, count);
+      this.onBlockLoaded(start, start + rows.length - 1, lengthChanged);
+    } finally {
+      if (generation === this.generation) {
+        this.pending.delete(block);
+      }
+    }
   }
 
   private updateLength(
