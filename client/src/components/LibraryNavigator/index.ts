@@ -155,7 +155,7 @@ class LibraryNavigator implements SubscriptionProvider {
         panel instanceof DataViewer ||
         panel instanceof TablePropertiesViewer
       ) {
-        panel.refreshData();
+        panel.refreshWhenVisible();
       }
     });
   }

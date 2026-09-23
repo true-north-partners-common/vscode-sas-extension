@@ -113,4 +113,36 @@ describe("LibraryNavigator refresh flow", async function () {
     expect(tablePropertiesViewerRefresh.calledOnce).to.equal(true);
     expect(nonTablePanel.refreshData.called).to.equal(false);
   });
+
+  it("refreshWhenVisible defers a hidden panel's refresh until it's shown", () => {
+    const dataViewer = createDataViewer();
+    const refreshData = sinon.stub(dataViewer, "refreshData");
+    let viewStateListener: (e: {
+      webviewPanel: { active: boolean; visible: boolean };
+    }) => void;
+    const panel = {
+      visible: false,
+      onDidDispose: () => undefined,
+      onDidChangeViewState: (listener: typeof viewStateListener) => {
+        viewStateListener = listener;
+      },
+      webview: {
+        onDidReceiveMessage: () => undefined,
+        postMessage: () => true,
+      },
+    };
+    // @ts-expect-error a partial panel is enough for these listeners
+    dataViewer.withPanel(panel);
+
+    dataViewer.refreshWhenVisible();
+    expect(refreshData.called).to.equal(false);
+
+    panel.visible = true;
+    viewStateListener({ webviewPanel: { active: true, visible: true } });
+    expect(refreshData.calledOnce).to.equal(true);
+
+    // Shown again with nothing pending: no second refresh
+    viewStateListener({ webviewPanel: { active: true, visible: true } });
+    expect(refreshData.calledOnce).to.equal(true);
+  });
 });

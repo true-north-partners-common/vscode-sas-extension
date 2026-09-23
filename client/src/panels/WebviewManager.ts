@@ -37,6 +37,7 @@ export abstract class WebView {
   protected panel: WebviewPanel;
   private _disposables: Disposable[] = [];
   private _onDispose: () => void;
+  private _refreshPending = false;
 
   public constructor(
     protected readonly extensionUri: Uri,
@@ -49,6 +50,7 @@ export abstract class WebView {
 
   abstract body(): string;
   abstract l10nMessages?(): Record<string, string>;
+  refreshData?(): void | Promise<void>;
   abstract scripts?(): string[];
   abstract styles?(): string[];
   public render(): WebView {
@@ -107,14 +109,31 @@ export abstract class WebView {
     this.panel = webviewPanel;
     this.panel.onDidDispose(() => this.dispose(), null, this._disposables);
     this.panel.webview.onDidReceiveMessage(this.processMessage.bind(this));
-    this.panel.onDidChangeViewState((e) =>
+    this.panel.onDidChangeViewState((e) => {
       this.panel.webview.postMessage({
         command: "panel:changeFocus",
         data: { focused: e.webviewPanel.active },
-      }),
-    );
+      });
+      if (e.webviewPanel.visible && this._refreshPending) {
+        this._refreshPending = false;
+        this.refreshData?.();
+      }
+    });
 
     return this;
+  }
+
+  /**
+   * Refreshes the panel now if it's on screen, otherwise the next time it's
+   * shown, so hidden panels don't read their tables after every run.
+   */
+  public refreshWhenVisible() {
+    if (this.panel?.visible === false) {
+      this._refreshPending = true;
+      return;
+    }
+    this._refreshPending = false;
+    this.refreshData?.();
   }
 
   public getPanel() {
