@@ -21,8 +21,14 @@ class DataViewer extends WebView {
     }>,
     protected readonly fetchColumns: () => TableColumn[],
     protected readonly loadColumnProperties: (columnName: string) => void,
+    protected readonly onClose?: () => void,
   ) {
     super(extensionUri, uid);
+  }
+
+  public dispose() {
+    super.dispose();
+    this.onClose?.();
   }
 
   public l10nMessages() {

@@ -22,7 +22,13 @@ class LibraryModel {
   public constructor(protected libraryAdapter: LibraryAdapter | undefined) {}
 
   public useAdapter(adapter: LibraryAdapter): void {
+    // The old adapter's sorted views would otherwise last as long as the session
+    this.libraryAdapter?.releaseSortedViews?.();
     this.libraryAdapter = adapter;
+  }
+
+  public releaseSortedViews(item: LibraryItem): void {
+    this.libraryAdapter?.releaseSortedViews?.(item);
   }
 
   public getTableResultSet(

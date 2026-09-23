@@ -85,5 +85,8 @@ export interface LibraryAdapter {
     count: number;
   }>;
   getTableInfo?(item: LibraryItem): Promise<TableInfo>;
+  releaseSortedViews?(
+    item?: Pick<LibraryItem, "library" | "name">,
+  ): Promise<void>;
   setup(): Promise<void>;
 }

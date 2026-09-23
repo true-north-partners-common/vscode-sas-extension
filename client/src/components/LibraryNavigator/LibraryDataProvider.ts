@@ -189,6 +189,10 @@ class LibraryDataProvider
     this._onDidChangeTreeData.fire(undefined);
   }
 
+  public releaseSortedViews(item: LibraryItem): void {
+    this.model.releaseSortedViews(item);
+  }
+
   public async getTableInfo(item: LibraryItem) {
     return await this.model.getTableInfo(item);
   }

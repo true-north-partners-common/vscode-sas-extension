@@ -61,6 +61,7 @@ class LibraryNavigator implements SubscriptionProvider {
               (columnName: string) => {
                 this.displayTableProperties(item, true, columnName);
               },
+              () => this.libraryDataProvider.releaseSortedViews(item),
             ),
             item.uid,
           );

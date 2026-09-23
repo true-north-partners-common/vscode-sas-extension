@@ -27,6 +27,8 @@ const requestOptions = {
   headers: { Accept: "application/vnd.sas.collection+json" },
 };
 
+type TableRef = Pick<LibraryItem, "library" | "name">;
+
 class RestLibraryAdapter implements LibraryAdapter {
   protected dataAccessApi: ReturnType<typeof DataAccessApi>;
   protected InformatsApi: ReturnType<typeof InformatsApi>;
@@ -98,14 +100,46 @@ class RestLibraryAdapter implements LibraryAdapter {
     };
   }
 
+  // One sorted view per table, reused for every page read with the same sort
+  // instead of creating and deleting a view for each page.
+  private sortedViews = new Map<
+    string,
+    { table: TableRef; sortKey: string; view: Promise<TableRef> }
+  >();
+
   private async getSortedRows(
-    item: Pick<LibraryItem, "name" | "library">,
+    item: TableRef,
     start: number,
     limit: number,
     sortModel: SortModelItem[],
     query: TableQuery | undefined,
   ): Promise<TableData> {
-    const { data: viewData } = await this.retryOnFail(
+    try {
+      const view = await this.sortedView(item, sortModel);
+      return await this.getRows(view, start, limit, [], query);
+    } catch (error) {
+      if (error?.response?.status !== 404) {
+        throw error;
+      }
+      // The view went with its session: make a fresh one, once
+      await this.forgetSortedView(item);
+      const view = await this.sortedView(item, sortModel);
+      return await this.getRows(view, start, limit, [], query);
+    }
+  }
+
+  private sortedView(item: TableRef, sortModel: SortModelItem[]) {
+    const tableKey = `${item.library}.${item.name}`;
+    const sortKey = JSON.stringify(sortModel);
+    const existing = this.sortedViews.get(tableKey);
+    if (existing?.sortKey === sortKey) {
+      return existing.view;
+    }
+    if (existing) {
+      this.forgetSortedView(item);
+    }
+
+    const view = this.retryOnFail(
       async () =>
         await this.dataAccessApi.createView(
           {
@@ -122,22 +156,43 @@ class RestLibraryAdapter implements LibraryAdapter {
           },
           requestOptions,
         ),
-    );
+    ).then(({ data }) => ({ library: data.libref, name: data.name }));
+    this.sortedViews.set(tableKey, { table: item, sortKey, view });
+    view.catch(() => {
+      if (this.sortedViews.get(tableKey)?.view === view) {
+        this.sortedViews.delete(tableKey);
+      }
+    });
+    return view;
+  }
 
-    const results = await this.getRows(
-      {
-        library: viewData.libref,
-        name: viewData.name,
-      },
-      start,
-      limit,
-      [],
-      query,
-    );
+  private async forgetSortedView(item: TableRef): Promise<void> {
+    const tableKey = `${item.library}.${item.name}`;
+    const existing = this.sortedViews.get(tableKey);
+    if (!existing) {
+      return;
+    }
+    this.sortedViews.delete(tableKey);
+    try {
+      const { library, name } = await existing.view;
+      // Not through retryOnFail: a view that's already gone would reconnect,
+      // which cancels whatever the session is running.
+      await this.dataAccessApi.deleteTable({
+        sessionId: this.sessionId,
+        libref: library,
+        tableName: name,
+      });
+    } catch {
+      // Best effort: views end with their session anyway
+    }
+  }
 
-    await this.deleteTable({ library: viewData.libref, name: viewData.name });
-
-    return results;
+  /** Deletes the sorted views kept for a table, or for every table. */
+  public async releaseSortedViews(item?: TableRef): Promise<void> {
+    const tables = item
+      ? [item]
+      : [...this.sortedViews.values()].map(({ table }) => table);
+    await Promise.all(tables.map((table) => this.forgetSortedView(table)));
   }
 
   public async getRowsAsCSV(
