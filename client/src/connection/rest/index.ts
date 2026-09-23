@@ -34,6 +34,26 @@ export interface Config extends BaseConfig {
   sessionInactiveTimeout?: number;
 }
 
+// Bounds on the idle timeout a profile may give a session. A session that
+// outlives its VS Code window (a crash, a killed extension host) stays on the
+// server, holding whatever it has open, for up to the upper bound.
+const MIN_SESSION_INACTIVE_TIMEOUT = 60;
+const MAX_SESSION_INACTIVE_TIMEOUT = 8 * 60 * 60;
+
+const cappedInactiveTimeout = (seconds?: number): number | undefined => {
+  if (seconds === undefined) {
+    return undefined;
+  }
+  // 0 used to mean "never time out"; give it the longest allowed instead
+  if (seconds <= 0) {
+    return MAX_SESSION_INACTIVE_TIMEOUT;
+  }
+  return Math.min(
+    Math.max(seconds, MIN_SESSION_INACTIVE_TIMEOUT),
+    MAX_SESSION_INACTIVE_TIMEOUT,
+  );
+};
+
 class RestSession extends Session {
   private _config: Config;
   private _computeSession: ComputeSession | undefined;
@@ -166,8 +186,9 @@ class RestSession extends Session {
                 ? {}
                 : {
                     attributes: {
-                      sessionInactiveTimeout:
+                      sessionInactiveTimeout: cappedInactiveTimeout(
                         this._config.sessionInactiveTimeout,
+                      ),
                     },
                   }),
               environment: {
@@ -219,7 +240,9 @@ class RestSession extends Session {
         sessionDiagnosticLines(this._computeSession.sessionId, {
           contextName: context?.name,
           contextTimeout: attributes?.sessionInactiveTimeout,
-          profileTimeout: this._config.sessionInactiveTimeout,
+          profileTimeout: cappedInactiveTimeout(
+            this._config.sessionInactiveTimeout,
+          ),
         }).map((line) => ({ line, type: LogLineTypeEnum.Note })),
       );
       // eslint-disable-next-line @typescript-eslint/no-unused-vars

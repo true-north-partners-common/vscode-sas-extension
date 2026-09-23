@@ -285,7 +285,8 @@
                           },
                           "sessionInactiveTimeout": {
                             "type": "number",
-                            "minimum": 0,
+                            "minimum": 60,
+                            "maximum": 28800,
                             "description": "%configuration.SAS.connectionProfiles.profiles.sessionInactiveTimeout%"
                           },
                           "clientId": {
