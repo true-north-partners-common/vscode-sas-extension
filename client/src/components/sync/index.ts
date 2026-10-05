@@ -30,7 +30,7 @@ import {
 } from "./core/diff";
 import { discover } from "./core/discover";
 import { RemoteRootExpansionError, resolveRemoteRoot } from "./core/expand";
-import { emitEnvironment } from "./core/generate";
+import { DEFAULT_ROOT_MACRO_VAR, emitEnvironment } from "./core/generate";
 import { errorsIn } from "./core/log";
 import {
   RemoteManifest,
@@ -59,12 +59,6 @@ const DEFAULT_SYNC_FILE_EXTENSIONS = [".sas", ".inc"];
  */
 const MANIFEST_FILE_NAME = ".sas-sync-manifest.json";
 
-/**
- * The macro variable always points at remoteRoot, so the only thing worth
- * configuring is its name. Defaulting it means `%include "&REPO/..."` works
- * without any extra setup; set it to "" to emit nothing.
- */
-const DEFAULT_ROOT_MACRO_VAR = "REPO";
 const FORCE_RESYNC_CONTEXT_KEY = "SAS.sync.forceResync";
 
 /**

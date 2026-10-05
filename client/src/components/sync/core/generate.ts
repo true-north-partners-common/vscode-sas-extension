@@ -10,6 +10,13 @@ import { posix } from "path";
  */
 const sasPath = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 
+/**
+ * The macro variable always points at remoteRoot, so the only thing worth
+ * configuring is its name. Defaulting it means `%include "&REPO/..."` works
+ * without any extra setup; set it to "" to emit nothing.
+ */
+export const DEFAULT_ROOT_MACRO_VAR = "REPO";
+
 export interface EnvironmentOptions {
   remoteRoot: string;
   /** Directories, relative to remoteRoot, to add to the autocall path. */

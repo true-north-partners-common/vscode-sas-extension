@@ -1,6 +1,8 @@
 // Copyright © 2022-2024, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import { authentication, l10n } from "vscode";
+import { authentication, l10n, window, workspace } from "vscode";
+
+import { basename } from "path";
 
 import { BaseConfig, RunResult } from "..";
 import { SASAuthProvider } from "../../components/AuthProvider";
@@ -9,6 +11,8 @@ import {
   setContextValue,
 } from "../../components/ExtensionContext";
 import { updateStatusBarItem } from "../../components/StatusBarItem";
+import type { ProfileSyncOptions } from "../../components/profile";
+import { syncAutoExecLines } from "../../components/sync/core/autoexec";
 import { Session, SessionContextAttributes } from "../session";
 import {
   Context,
@@ -31,6 +35,7 @@ export interface Config extends BaseConfig {
   context?: string;
   serverId?: string;
   reconnect?: boolean;
+  sync?: ProfileSyncOptions["sync"];
   sessionInactiveTimeout?: number;
 }
 
@@ -102,10 +107,40 @@ class RestSession extends Session {
     return this._cachedContext;
   }
 
+  /**
+   * The root macro variable assignment to put ahead of the profile's autoexec.
+   *
+   * Scoped to the workspace folder of the document in front of the user, which
+   * is the same folder syncWorkspace will pick, so the two agree in a
+   * multi-root workspace.
+   */
+  private syncAutoExecLines = (): string[] => {
+    // Sync refuses to run in an untrusted workspace, and remoteRoot is
+    // workspace-influenced, so nothing derived from it belongs in a session.
+    if (!workspace.isTrusted) {
+      return [];
+    }
+
+    const uri = window.activeTextEditor?.document.uri;
+    const folder =
+      (uri ? workspace.getWorkspaceFolder(uri) : undefined) ??
+      workspace.workspaceFolders?.[0];
+
+    return syncAutoExecLines(
+      this._config.sync,
+      folder && basename(folder.uri.fsPath),
+    );
+  };
+
   protected establishConnection = async (): Promise<void> => {
     const apiConfig = getApiConfig();
     let formattedOpts: string[] = [];
-    const autoExecLines = this._config.autoExecLines || [];
+    // The sync wiring goes first so an autoexec can build paths out of the
+    // root macro variable.
+    const autoExecLines = [
+      ...this.syncAutoExecLines(),
+      ...(this._config.autoExecLines || []),
+    ];
 
     if (this._config.sasOptions) {
       formattedOpts = this.formatSASOptions();
@@ -166,7 +201,7 @@ class RestSession extends Session {
     if (this._config.serverId) {
       const server1 = new ComputeServer(this._config.serverId);
       server1.options = formattedOpts;
-      server1.autoExecLines = this._config.autoExecLines;
+      server1.autoExecLines = autoExecLines;
       this._computeSession = await server1.getSession();
 
       //Maybe wait for session to be initialized?
