@@ -18,6 +18,21 @@ import {
 import { Compute, getApiConfig, stateOptions } from "./common";
 import { withRetry } from "./retry";
 
+/**
+ * How long to let a request sit before treating it as lost.
+ *
+ * A socket that died with the machine does not announce itself - it simply
+ * stops answering - and with no deadline the request waits out TCP
+ * retransmission, which is minutes. The margin sits on top of however long
+ * the server was asked to hold the request open, so a long poll answering
+ * normally is never cut short. A timeout here is retried rather than
+ * surfaced, so erring short costs a round trip, not a run.
+ */
+const REQUEST_MARGIN_SECONDS = 20;
+
+const requestTimeoutMs = (serverWaitSeconds: number = 0): number =>
+  (serverWaitSeconds + REQUEST_MARGIN_SECONDS) * 1000;
+
 export class ComputeJob extends Compute {
   api: ReturnType<typeof JobsApi>;
   logs: ReturnType<typeof LogsApi>;
@@ -78,6 +93,7 @@ export class ComputeJob extends Compute {
     };
 
     const resp = await this.api.getJobState(parms, {
+      timeout: requestTimeoutMs(options?.wait),
       validateStatus: (status) => {
         return status >= 200 && status < 400;
       },
@@ -112,12 +128,15 @@ export class ComputeJob extends Compute {
       // machine slept can simply be asked again and carry on where it left
       // off rather than abandoning a job that is still going.
       const resp = await withRetry(() =>
-        this.logs.getJobLog({
-          sessionId: this._self.sessionId,
-          jobId: this.id,
-          start: start,
-          timeout: timeout,
-        }),
+        this.logs.getJobLog(
+          {
+            sessionId: this._self.sessionId,
+            jobId: this.id,
+            start: start,
+            timeout: timeout,
+          },
+          { timeout: requestTimeoutMs(timeout) },
+        ),
       );
 
       if (resp.status === 200) {
@@ -141,12 +160,15 @@ export class ComputeJob extends Compute {
 
     let nextLink: Link = undefined;
     let resp = await withRetry(() =>
-      this.logs.getJobLog({
-        sessionId: this._self.sessionId,
-        jobId: this.id,
-        start: start,
-        timeout: timeout,
-      }),
+      this.logs.getJobLog(
+        {
+          sessionId: this._self.sessionId,
+          jobId: this.id,
+          start: start,
+          timeout: timeout,
+        },
+        { timeout: requestTimeoutMs(timeout) },
+      ),
     );
 
     //To clear out the log, we yield all lines until there is not "next" link
@@ -157,7 +179,9 @@ export class ComputeJob extends Compute {
         yield items;
 
         if (nextLink) {
-          resp = await withRetry(() => this.requestLink(nextLink));
+          resp = await withRetry(() =>
+            this.requestLink(nextLink, { timeout: requestTimeoutMs() }),
+          );
         }
       } else {
         break;

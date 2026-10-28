@@ -24,6 +24,18 @@ describe("connection/retry", () => {
       assert.strictEqual(isTransient(axiosErrorWith(undefined)), true);
     });
 
+    it("retries a request we gave up waiting on", () => {
+      // The client-side deadline on the poll loop is what turns a socket that
+      // died with the machine into something retryable, rather than a request
+      // that hangs until TCP gives up.
+      const timedOut = new AxiosError(
+        "timeout exceeded",
+        AxiosError.ECONNABORTED,
+      );
+
+      assert.strictEqual(isTransient(timedOut), true);
+    });
+
     it("retries a server fault", () => {
       assert.strictEqual(isTransient(axiosErrorWith(500)), true);
       assert.strictEqual(isTransient(axiosErrorWith(503)), true);
