@@ -16,6 +16,7 @@ import {
   ResultCollection,
 } from "./api/compute";
 import { Compute, getApiConfig, stateOptions } from "./common";
+import { withRetry } from "./retry";
 
 export class ComputeJob extends Compute {
   api: ReturnType<typeof JobsApi>;
@@ -106,13 +107,18 @@ export class ComputeJob extends Compute {
     const states = ["done", "canceled", "error", "warning", "completed"];
 
     while (states.indexOf(state) === -1) {
-      //Get a log page
-      const resp = await this.logs.getJobLog({
-        sessionId: this._self.sessionId,
-        jobId: this.id,
-        start: start,
-        timeout: timeout,
-      });
+      // The job keeps running on the server whatever happens to this end of
+      // the wire, and `start` is an offset, so a poll that fails because the
+      // machine slept can simply be asked again and carry on where it left
+      // off rather than abandoning a job that is still going.
+      const resp = await withRetry(() =>
+        this.logs.getJobLog({
+          sessionId: this._self.sessionId,
+          jobId: this.id,
+          start: start,
+          timeout: timeout,
+        }),
+      );
 
       if (resp.status === 200) {
         const items = resp.data.items;
@@ -124,7 +130,7 @@ export class ComputeJob extends Compute {
         start += num;
 
         //get new state
-        state = await this.getState();
+        state = await withRetry(() => this.getState());
       } else {
         break;
       }
@@ -134,12 +140,14 @@ export class ComputeJob extends Compute {
     //Need to make sure we clear out the log
 
     let nextLink: Link = undefined;
-    let resp = await this.logs.getJobLog({
-      sessionId: this._self.sessionId,
-      jobId: this.id,
-      start: start,
-      timeout: timeout,
-    });
+    let resp = await withRetry(() =>
+      this.logs.getJobLog({
+        sessionId: this._self.sessionId,
+        jobId: this.id,
+        start: start,
+        timeout: timeout,
+      }),
+    );
 
     //To clear out the log, we yield all lines until there is not "next" link
     do {
@@ -149,7 +157,7 @@ export class ComputeJob extends Compute {
         yield items;
 
         if (nextLink) {
-          resp = await this.requestLink(nextLink);
+          resp = await withRetry(() => this.requestLink(nextLink));
         }
       } else {
         break;

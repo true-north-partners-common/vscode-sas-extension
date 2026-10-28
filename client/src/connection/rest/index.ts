@@ -25,6 +25,7 @@ import { ComputeJob } from "./job";
 import { ComputeServer } from "./server";
 import { ComputeSession } from "./session";
 import { sessionDiagnosticLines } from "./sessionDiagnostics";
+import { installTokenRefresh } from "./tokenRefresh";
 
 let sessionInstance: RestSession;
 
@@ -157,10 +158,20 @@ class RestSession extends Session {
       const state = await this._computeSession
         .getState()
         .catch(async (error) => {
+          const status = error?.response?.status;
+
+          // A refused credential says nothing about whether the session is
+          // alive, and by now it has already had its refresh and retry. The
+          // session is very likely fine and worth more than this probe, so
+          // leave it standing - deleting it would throw away the WORK library
+          // over something re-authenticating fixes.
+          if (status === 401 || status === 403) {
+            throw error;
+          }
+
           // A 404 or 410 means the session is already gone. Any other failure
           // (network, 5xx) may leave it running, so delete it rather than
           // leaving it, and whatever it has open, until its idle timeout.
-          const status = error?.response?.status;
           if (status !== 404 && status !== 410) {
             await this._computeSession.delete().catch(() => undefined);
           }
@@ -472,6 +483,7 @@ class RestSession extends Session {
 }
 
 export function getSession(c: Config): Session {
+  installTokenRefresh();
   getApiConfig().basePath = c.endpoint + "/compute";
 
   if (!sessionInstance) {
